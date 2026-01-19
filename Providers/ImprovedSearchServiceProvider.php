@@ -104,10 +104,10 @@ class ImprovedSearchServiceProvider extends ServiceProvider
         //     return $searchService->performSearch($query, $filters, $user);
         // }, 20, 4);
 
-        // Extend the filters list shown in UI (safe - doesn't override search)
-        \Eventy::addFilter('search.filters_list', function ($filtersList, $mode, $filters, $query) {
-            return $this->extendFiltersList($filtersList, $mode, $filters, $query);
-        }, 20, 4);
+        // NOTE: Disabled filters extension - format doesn't match FreeScout's view expectations
+        // \Eventy::addFilter('search.filters_list', function ($filtersList, $mode, $filters, $query) {
+        //     return $this->extendFiltersList($filtersList, $mode, $filters, $query);
+        // }, 20, 4);
 
         // Hook into conversation save to update search index
         \Eventy::addAction('conversation.created', function ($conversation) {
