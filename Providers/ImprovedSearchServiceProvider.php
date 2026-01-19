@@ -85,34 +85,26 @@ class ImprovedSearchServiceProvider extends ServiceProvider
     }
 
     /**
-     * Register Eventy hooks to override/extend search functionality.
+     * Register Eventy hooks to extend search functionality.
+     * Note: We don't override the main search to maintain compatibility.
+     * Instead we add suggestions, history tracking, and extra features.
      */
     protected function registerHooks()
     {
-        // Override the main search implementation
-        \Eventy::addFilter('search.conversations.perform', function ($result, $query, $filters, $user) {
-            // If result is already set by another module, don't override
-            if (!empty($result)) {
-                return $result;
-            }
+        // NOTE: Disabled search override to maintain FreeScout compatibility
+        // The search.conversations.perform hook returns data in a format that
+        // doesn't match what FreeScout's view expects. For now, we just add
+        // extra features without overriding the core search.
 
-            $searchService = app(SearchService::class);
-            return $searchService->performSearch($query, $filters, $user);
-        }, 20, 4);
+        // \Eventy::addFilter('search.conversations.perform', function ($result, $query, $filters, $user) {
+        //     if (!empty($result)) {
+        //         return $result;
+        //     }
+        //     $searchService = app(SearchService::class);
+        //     return $searchService->performSearch($query, $filters, $user);
+        // }, 20, 4);
 
-        // Add additional OR WHERE clauses to extend search
-        \Eventy::addFilter('search.conversations.or_where', function ($queryBuilder, $filters, $query) {
-            $searchService = app(SearchService::class);
-            return $searchService->addOrWhereClauses($queryBuilder, $filters, $query);
-        }, 20, 3);
-
-        // Apply additional filters
-        \Eventy::addFilter('search.conversations.apply_filters', function ($queryBuilder, $filters, $query) {
-            $searchService = app(SearchService::class);
-            return $searchService->applyAdvancedFilters($queryBuilder, $filters, $query);
-        }, 20, 3);
-
-        // Extend the filters list shown in UI
+        // Extend the filters list shown in UI (safe - doesn't override search)
         \Eventy::addFilter('search.filters_list', function ($filtersList, $mode, $filters, $query) {
             return $this->extendFiltersList($filtersList, $mode, $filters, $query);
         }, 20, 4);
