@@ -81,12 +81,13 @@ class SearchService
             $cleanQuery = str_replace($matches[0], '', $cleanQuery);
         }
 
-        // Parse last:day - filters to that specific day only (e.g., last:friday = just last Friday)
+        // Parse last:period - filters to that specific period (day, week, month, year)
         if (preg_match('/\blast:(\S+)/i', $query, $matches)) {
-            $date = $this->parseDate($matches[1]);
-            if ($date) {
-                $operators['after'] = $date->format('Y-m-d 00:00:00');
-                $operators['before'] = $date->format('Y-m-d 23:59:59');
+            $period = strtolower($matches[1]);
+            $range = $this->parseDateRange($period);
+            if ($range) {
+                $operators['after'] = $range['start'];
+                $operators['before'] = $range['end'];
             }
             $cleanQuery = str_replace($matches[0], '', $cleanQuery);
         }
@@ -134,6 +135,56 @@ class SearchService
             'query' => trim($cleanQuery),
             'operators' => $operators,
         ];
+    }
+
+    /**
+     * Parse a period string into start and end dates for last: operator.
+     * Returns array with 'start' and 'end' keys.
+     */
+    protected function parseDateRange($period)
+    {
+        try {
+            switch ($period) {
+                case 'week':
+                    // Last week (Mon-Sun of previous week)
+                    $start = Carbon::now()->subWeek()->startOfWeek();
+                    $end = Carbon::now()->subWeek()->endOfWeek();
+                    return ['start' => $start->format('Y-m-d 00:00:00'), 'end' => $end->format('Y-m-d 23:59:59')];
+
+                case 'month':
+                    // Last month
+                    $start = Carbon::now()->subMonth()->startOfMonth();
+                    $end = Carbon::now()->subMonth()->endOfMonth();
+                    return ['start' => $start->format('Y-m-d 00:00:00'), 'end' => $end->format('Y-m-d 23:59:59')];
+
+                case 'year':
+                    // Last year
+                    $start = Carbon::now()->subYear()->startOfYear();
+                    $end = Carbon::now()->subYear()->endOfYear();
+                    return ['start' => $start->format('Y-m-d 00:00:00'), 'end' => $end->format('Y-m-d 23:59:59')];
+
+                case 'today':
+                    $date = Carbon::today();
+                    return ['start' => $date->format('Y-m-d 00:00:00'), 'end' => $date->format('Y-m-d 23:59:59')];
+
+                case 'yesterday':
+                    $date = Carbon::yesterday();
+                    return ['start' => $date->format('Y-m-d 00:00:00'), 'end' => $date->format('Y-m-d 23:59:59')];
+            }
+
+            // Day names (friday, monday, etc.) - just that specific day
+            $days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+            if (in_array($period, $days)) {
+                $date = Carbon::parse("last {$period}");
+                return ['start' => $date->format('Y-m-d 00:00:00'), 'end' => $date->format('Y-m-d 23:59:59')];
+            }
+
+            // Try parsing as a specific date
+            $date = Carbon::parse($period);
+            return ['start' => $date->format('Y-m-d 00:00:00'), 'end' => $date->format('Y-m-d 23:59:59')];
+        } catch (\Exception $e) {
+            return null;
+        }
     }
 
     /**
