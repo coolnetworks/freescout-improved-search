@@ -177,15 +177,17 @@ class ImprovedSearchServiceProvider extends ServiceProvider
             echo '<script src="/modules/improvedsearch/js/search.js"></script>';
         }, 20);
 
-        // Add "Advanced Search" link to the menu
-        \Eventy::addFilter('menu.selected', function ($menu) {
-            return $menu;
-        }, 20, 1);
-
-        // Add link next to search in the header area via menu
+        // Add search form to the top navbar
         \Eventy::addFilter('menu.append', function ($html) {
             $url = route('improvedsearch.advanced');
-            $html .= '<li><a href="' . $url . '" title="' . __('Advanced Search') . '"><i class="glyphicon glyphicon-search"></i></a></li>';
+            $html .= '<li class="improved-search-nav">'
+                . '<form action="' . $url . '" method="GET" style="margin:8px 10px 0 10px;display:flex;align-items:center;">'
+                . '<div style="position:relative;display:flex;">'
+                . '<input type="text" name="q" class="form-control input-sm" placeholder="' . __('Search...') . '" style="width:200px;padding-right:30px;">'
+                . '<button type="submit" style="position:absolute;right:5px;top:50%;transform:translateY(-50%);background:none;border:none;color:#888;cursor:pointer;"><i class="glyphicon glyphicon-search"></i></button>'
+                . '</div>'
+                . '</form>'
+                . '</li>';
             return $html;
         }, 20, 1);
 
