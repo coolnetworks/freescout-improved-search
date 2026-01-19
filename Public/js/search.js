@@ -61,18 +61,6 @@
             var self = this;
             console.log('ImprovedSearch: Creating date picker');
 
-            // Find the search form
-            var form = this.searchInput.closest('form');
-            if (!form) {
-                console.log('ImprovedSearch: No form found, skipping date picker');
-                return;
-            }
-
-            // Create a wrapper for positioning
-            var wrapper = document.createElement('div');
-            wrapper.className = 'improved-search-wrapper';
-            wrapper.style.cssText = 'position:relative;display:inline-block;';
-
             // Create date picker button (small icon inside the input area)
             this.datePickerBtn = document.createElement('button');
             this.datePickerBtn.type = 'button';
@@ -88,13 +76,12 @@
 
             this.datePickerPanel.innerHTML = this.getDatePickerHTML();
 
-            // Wrap the search input
+            // Add button and panel to the input's parent
             var inputParent = this.searchInput.parentElement;
             inputParent.style.position = 'relative';
-
-            // Add button and panel to the input's parent
             inputParent.appendChild(this.datePickerBtn);
             inputParent.appendChild(this.datePickerPanel);
+            console.log('ImprovedSearch: Date picker button appended to', inputParent.tagName);
 
             // Adjust input padding to make room for button
             this.searchInput.style.paddingRight = '30px';
