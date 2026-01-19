@@ -273,14 +273,39 @@ class SearchService
     }
 
     /**
-     * Enhanced LIKE search with relevance ranking.
+     * Check if FULLTEXT indexes exist on the tables.
+     */
+    protected function hasFulltextIndexes()
+    {
+        static $hasIndexes = null;
+
+        if ($hasIndexes !== null) {
+            return $hasIndexes;
+        }
+
+        if (\Helper::isPgSql()) {
+            $hasIndexes = false;
+            return false;
+        }
+
+        try {
+            $result = DB::select("SHOW INDEX FROM conversations WHERE Key_name = 'conversations_subject_ft'");
+            $hasIndexes = !empty($result);
+        } catch (\Exception $e) {
+            $hasIndexes = false;
+        }
+
+        return $hasIndexes;
+    }
+
+    /**
+     * Enhanced search with FULLTEXT support and fuzzy matching.
      * Returns a LengthAwarePaginator with Conversation models.
      */
     protected function enhancedLikeSearch($searchTerms, $originalQuery, $filters, $mailboxIds, $user)
     {
-        $likeOperator = \Helper::isPgSql() ? 'ILIKE' : 'LIKE';
         $perPage = config('improvedsearch.results_per_page', 50);
-        $page = request()->input('page', 1);
+        $useFulltext = config('improvedsearch.enable_fulltext', false) && $this->hasFulltextIndexes();
 
         // Build the base query using Eloquent for proper model hydration
         $query = Conversation::select('conversations.*')
@@ -289,29 +314,14 @@ class SearchService
             ->whereIn('conversations.mailbox_id', $mailboxIds);
 
         // Add search conditions only if there are search terms
-        if (!empty($searchTerms)) {
-            $query->where(function ($q) use ($searchTerms, $originalQuery, $likeOperator) {
-                foreach ($searchTerms as $term) {
-                    $termPattern = '%' . $term . '%';
-
-                    $q->orWhere('conversations.subject', $likeOperator, $termPattern)
-                        ->orWhere('conversations.customer_email', $likeOperator, $termPattern)
-                        ->orWhere('threads.body', $likeOperator, $termPattern)
-                        ->orWhere('threads.from', $likeOperator, $termPattern)
-                        ->orWhere('threads.to', $likeOperator, $termPattern)
-                        ->orWhere('threads.cc', $likeOperator, $termPattern)
-                        ->orWhere('threads.bcc', $likeOperator, $termPattern)
-                        ->orWhere('customers.first_name', $likeOperator, $termPattern)
-                        ->orWhere('customers.last_name', $likeOperator, $termPattern);
-                }
-
-                // Exact match on conversation number/id
-                $numericQuery = trim($originalQuery);
-                if (is_numeric($numericQuery)) {
-                    $q->orWhere('conversations.number', '=', $numericQuery)
-                        ->orWhere('conversations.id', '=', $numericQuery);
-                }
-            });
+        if (!empty($searchTerms) && !empty($originalQuery)) {
+            if ($useFulltext && !$this->isPgSql()) {
+                // Use MySQL FULLTEXT search for speed
+                $query = $this->applyFulltextSearch($query, $originalQuery, $searchTerms);
+            } else {
+                // Fall back to enhanced LIKE search with fuzzy matching
+                $query = $this->applyLikeSearch($query, $searchTerms, $originalQuery);
+            }
         }
 
         // Apply standard filters
@@ -320,12 +330,127 @@ class SearchService
         // Group by conversation ID to avoid duplicates from joins
         $query->groupBy('conversations.id');
 
-        // Order by relevance (subject matches first) then by date
-        $query->orderByRaw("CASE WHEN conversations.subject {$likeOperator} ? THEN 0 ELSE 1 END", ['%' . $originalQuery . '%'])
-            ->orderByDesc('conversations.updated_at');
+        // Order by date (FULLTEXT relevance ordering is handled in the search itself)
+        $query->orderByDesc('conversations.updated_at');
 
         // Return paginated results - this is what FreeScout expects
         return $query->paginate($perPage);
+    }
+
+    /**
+     * Apply MySQL FULLTEXT search.
+     */
+    protected function applyFulltextSearch($query, $originalQuery, $searchTerms)
+    {
+        // Prepare search query for BOOLEAN MODE
+        // Add wildcards for partial matching
+        $booleanQuery = $this->prepareFulltextQuery($originalQuery);
+
+        $query->where(function ($q) use ($booleanQuery, $originalQuery, $searchTerms) {
+            // FULLTEXT search on subject
+            $q->whereRaw("MATCH(conversations.subject) AGAINST(? IN BOOLEAN MODE)", [$booleanQuery]);
+
+            // FULLTEXT search on thread body
+            $q->orWhereRaw("MATCH(threads.body) AGAINST(? IN BOOLEAN MODE)", [$booleanQuery]);
+
+            // Also search email and names with LIKE for exact matching
+            $likePattern = '%' . $originalQuery . '%';
+            $q->orWhere('conversations.customer_email', 'LIKE', $likePattern)
+              ->orWhere('threads.from', 'LIKE', $likePattern)
+              ->orWhere('customers.first_name', 'LIKE', $likePattern)
+              ->orWhere('customers.last_name', 'LIKE', $likePattern);
+
+            // Exact match on conversation number/id
+            if (is_numeric(trim($originalQuery))) {
+                $q->orWhere('conversations.number', '=', trim($originalQuery))
+                  ->orWhere('conversations.id', '=', trim($originalQuery));
+            }
+        });
+
+        return $query;
+    }
+
+    /**
+     * Prepare query for FULLTEXT BOOLEAN MODE.
+     * Adds wildcards for partial matching.
+     */
+    protected function prepareFulltextQuery($query)
+    {
+        $terms = preg_split('/\s+/', trim($query), -1, PREG_SPLIT_NO_EMPTY);
+        $prepared = [];
+
+        foreach ($terms as $term) {
+            // Skip very short terms (MySQL minimum is usually 3-4 chars)
+            if (strlen($term) < 2) {
+                continue;
+            }
+
+            // Escape special FULLTEXT characters
+            $term = preg_replace('/[+\-><\(\)~*\"@]+/', ' ', $term);
+            $term = trim($term);
+
+            if (!empty($term)) {
+                // Add wildcard for partial matching
+                $prepared[] = '+' . $term . '*';
+            }
+        }
+
+        // If no valid terms, return original query
+        if (empty($prepared)) {
+            return $query . '*';
+        }
+
+        return implode(' ', $prepared);
+    }
+
+    /**
+     * Apply LIKE search with fuzzy matching using SOUNDEX.
+     */
+    protected function applyLikeSearch($query, $searchTerms, $originalQuery)
+    {
+        $likeOperator = \Helper::isPgSql() ? 'ILIKE' : 'LIKE';
+        $useFuzzy = config('improvedsearch.enable_fuzzy', true);
+
+        $query->where(function ($q) use ($searchTerms, $originalQuery, $likeOperator, $useFuzzy) {
+            foreach ($searchTerms as $term) {
+                $termPattern = '%' . $term . '%';
+
+                // Standard LIKE search
+                $q->orWhere('conversations.subject', $likeOperator, $termPattern)
+                    ->orWhere('conversations.customer_email', $likeOperator, $termPattern)
+                    ->orWhere('threads.body', $likeOperator, $termPattern)
+                    ->orWhere('threads.from', $likeOperator, $termPattern)
+                    ->orWhere('threads.to', $likeOperator, $termPattern)
+                    ->orWhere('threads.cc', $likeOperator, $termPattern)
+                    ->orWhere('threads.bcc', $likeOperator, $termPattern)
+                    ->orWhere('customers.first_name', $likeOperator, $termPattern)
+                    ->orWhere('customers.last_name', $likeOperator, $termPattern);
+
+                // Fuzzy matching with SOUNDEX for MySQL (phonetic similarity)
+                if ($useFuzzy && !$this->isPgSql() && strlen($term) >= 3) {
+                    $q->orWhereRaw("SOUNDEX(conversations.subject) = SOUNDEX(?)", [$term])
+                      ->orWhereRaw("SOUNDEX(customers.first_name) = SOUNDEX(?)", [$term])
+                      ->orWhereRaw("SOUNDEX(customers.last_name) = SOUNDEX(?)", [$term]);
+                }
+            }
+
+            // Exact match on conversation number/id
+            $numericQuery = trim($originalQuery);
+            if (is_numeric($numericQuery)) {
+                $q->orWhere('conversations.number', '=', $numericQuery)
+                    ->orWhere('conversations.id', '=', $numericQuery);
+            }
+        });
+
+        return $query;
+    }
+
+    /**
+     * Check if using PostgreSQL.
+     */
+    protected function isPgSql()
+    {
+        return \Helper::isPgSql();
     }
 
     /**

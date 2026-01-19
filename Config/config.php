@@ -3,9 +3,13 @@
 return [
     'name' => 'ImprovedSearch',
 
-    // Enable full-text search indexing (requires search_index table with FULLTEXT indexes)
-    // Set to false to use enhanced LIKE search instead (recommended, works without extra setup)
-    'enable_fulltext' => false,
+    // Enable MySQL FULLTEXT search (faster, requires running migration)
+    // Run: php artisan migrate to create FULLTEXT indexes
+    'enable_fulltext' => true,
+
+    // Enable fuzzy matching with SOUNDEX (finds phonetically similar words)
+    // Helps find results even with typos (e.g., "Jon" matches "John")
+    'enable_fuzzy' => true,
 
     // Minimum characters to trigger search
     'min_query_length' => 2,
