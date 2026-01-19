@@ -8,9 +8,17 @@ use App\Customer;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Pagination\LengthAwarePaginator;
+use Carbon\Carbon;
 
 class SearchService
 {
+    /**
+     * Supported search operators.
+     */
+    protected $operators = [
+        'after', 'before', 'from', 'to', 'status', 'has', 'mailbox', 'assigned'
+    ];
+
     /**
      * Perform an enhanced search across conversations.
      * Returns a LengthAwarePaginator to match FreeScout's expected format.
@@ -37,7 +45,14 @@ class SearchService
      */
     protected function executeSearch($query, $filters, $user)
     {
-        $searchTerms = $this->parseSearchTerms($query);
+        // Parse search operators from query
+        $parsed = $this->parseSearchOperators($query);
+        $searchTerms = $this->parseSearchTerms($parsed['query']);
+        $operators = $parsed['operators'];
+
+        // Merge parsed operators into filters
+        $filters = array_merge($filters, $operators);
+
         $mailboxIds = $this->getAccessibleMailboxIds($user, $filters);
 
         if (empty($mailboxIds)) {
@@ -45,7 +60,155 @@ class SearchService
             return new LengthAwarePaginator([], 0, 50, 1);
         }
 
-        return $this->enhancedLikeSearch($searchTerms, $query, $filters, $mailboxIds, $user);
+        return $this->enhancedLikeSearch($searchTerms, $parsed['query'], $filters, $mailboxIds, $user);
+    }
+
+    /**
+     * Parse search operators from query string.
+     * Supports: after:date, before:date, from:email, status:open, has:attachment
+     */
+    protected function parseSearchOperators($query)
+    {
+        $operators = [];
+        $cleanQuery = $query;
+
+        // Parse after:date
+        if (preg_match('/\bafter:(\S+)/i', $query, $matches)) {
+            $date = $this->parseDate($matches[1]);
+            if ($date) {
+                $operators['after'] = $date->format('Y-m-d 00:00:00');
+            }
+            $cleanQuery = str_replace($matches[0], '', $cleanQuery);
+        }
+
+        // Parse before:date
+        if (preg_match('/\bbefore:(\S+)/i', $query, $matches)) {
+            $date = $this->parseDate($matches[1]);
+            if ($date) {
+                $operators['before'] = $date->format('Y-m-d 23:59:59');
+            }
+            $cleanQuery = str_replace($matches[0], '', $cleanQuery);
+        }
+
+        // Parse from:email
+        if (preg_match('/\bfrom:(\S+)/i', $query, $matches)) {
+            $operators['from_email'] = $matches[1];
+            $cleanQuery = str_replace($matches[0], '', $cleanQuery);
+        }
+
+        // Parse to:email
+        if (preg_match('/\bto:(\S+)/i', $query, $matches)) {
+            $operators['to_email'] = $matches[1];
+            $cleanQuery = str_replace($matches[0], '', $cleanQuery);
+        }
+
+        // Parse status:open|closed|pending|spam
+        if (preg_match('/\bstatus:(\S+)/i', $query, $matches)) {
+            $operators['status_name'] = strtolower($matches[1]);
+            $cleanQuery = str_replace($matches[0], '', $cleanQuery);
+        }
+
+        // Parse has:attachment
+        if (preg_match('/\bhas:attachment/i', $query, $matches)) {
+            $operators['attachments'] = 'yes';
+            $cleanQuery = str_replace($matches[0], '', $cleanQuery);
+        }
+
+        // Parse assigned:me|unassigned|username
+        if (preg_match('/\bassigned:(\S+)/i', $query, $matches)) {
+            $operators['assigned'] = strtolower($matches[1]);
+            $cleanQuery = str_replace($matches[0], '', $cleanQuery);
+        }
+
+        return [
+            'query' => trim($cleanQuery),
+            'operators' => $operators,
+        ];
+    }
+
+    /**
+     * Parse a date string into Carbon instance.
+     * Supports: YYYY-MM-DD, today, yesterday, last week, last month, etc.
+     */
+    protected function parseDate($dateStr)
+    {
+        $dateStr = strtolower(trim($dateStr));
+
+        try {
+            // Relative dates
+            switch ($dateStr) {
+                case 'today':
+                    return Carbon::today();
+                case 'yesterday':
+                    return Carbon::yesterday();
+                case 'tomorrow':
+                    return Carbon::tomorrow();
+                case 'week':
+                case 'thisweek':
+                case 'this-week':
+                    return Carbon::now()->startOfWeek();
+                case 'lastweek':
+                case 'last-week':
+                    return Carbon::now()->subWeek()->startOfWeek();
+                case 'month':
+                case 'thismonth':
+                case 'this-month':
+                    return Carbon::now()->startOfMonth();
+                case 'lastmonth':
+                case 'last-month':
+                    return Carbon::now()->subMonth()->startOfMonth();
+                case 'year':
+                case 'thisyear':
+                case 'this-year':
+                    return Carbon::now()->startOfYear();
+                case 'lastyear':
+                case 'last-year':
+                    return Carbon::now()->subYear()->startOfYear();
+            }
+
+            // Try relative formats like "7days", "2weeks", "3months"
+            if (preg_match('/^(\d+)(days?|weeks?|months?|years?)$/i', $dateStr, $matches)) {
+                $num = (int) $matches[1];
+                $unit = strtolower($matches[2]);
+
+                if (strpos($unit, 'day') !== false) {
+                    return Carbon::now()->subDays($num);
+                } elseif (strpos($unit, 'week') !== false) {
+                    return Carbon::now()->subWeeks($num);
+                } elseif (strpos($unit, 'month') !== false) {
+                    return Carbon::now()->subMonths($num);
+                } elseif (strpos($unit, 'year') !== false) {
+                    return Carbon::now()->subYears($num);
+                }
+            }
+
+            // Day names (last monday, last friday, etc.)
+            $days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+            if (in_array($dateStr, $days)) {
+                return Carbon::parse("last {$dateStr}");
+            }
+
+            // Try standard date formats
+            return Carbon::parse($dateStr);
+        } catch (\Exception $e) {
+            return null;
+        }
+    }
+
+    /**
+     * Map status name to status constant.
+     */
+    protected function mapStatusName($statusName)
+    {
+        $map = [
+            'active' => Conversation::STATUS_ACTIVE,
+            'open' => Conversation::STATUS_ACTIVE,
+            'pending' => Conversation::STATUS_PENDING,
+            'closed' => Conversation::STATUS_CLOSED,
+            'spam' => Conversation::STATUS_SPAM,
+        ];
+
+        return $map[$statusName] ?? null;
     }
 
     /**
@@ -64,29 +227,31 @@ class SearchService
             ->leftJoin('customers', 'conversations.customer_id', '=', 'customers.id')
             ->whereIn('conversations.mailbox_id', $mailboxIds);
 
-        // Add search conditions
-        $query->where(function ($q) use ($searchTerms, $originalQuery, $likeOperator) {
-            foreach ($searchTerms as $term) {
-                $termPattern = '%' . $term . '%';
+        // Add search conditions only if there are search terms
+        if (!empty($searchTerms)) {
+            $query->where(function ($q) use ($searchTerms, $originalQuery, $likeOperator) {
+                foreach ($searchTerms as $term) {
+                    $termPattern = '%' . $term . '%';
 
-                $q->orWhere('conversations.subject', $likeOperator, $termPattern)
-                    ->orWhere('conversations.customer_email', $likeOperator, $termPattern)
-                    ->orWhere('threads.body', $likeOperator, $termPattern)
-                    ->orWhere('threads.from', $likeOperator, $termPattern)
-                    ->orWhere('threads.to', $likeOperator, $termPattern)
-                    ->orWhere('threads.cc', $likeOperator, $termPattern)
-                    ->orWhere('threads.bcc', $likeOperator, $termPattern)
-                    ->orWhere('customers.first_name', $likeOperator, $termPattern)
-                    ->orWhere('customers.last_name', $likeOperator, $termPattern);
-            }
+                    $q->orWhere('conversations.subject', $likeOperator, $termPattern)
+                        ->orWhere('conversations.customer_email', $likeOperator, $termPattern)
+                        ->orWhere('threads.body', $likeOperator, $termPattern)
+                        ->orWhere('threads.from', $likeOperator, $termPattern)
+                        ->orWhere('threads.to', $likeOperator, $termPattern)
+                        ->orWhere('threads.cc', $likeOperator, $termPattern)
+                        ->orWhere('threads.bcc', $likeOperator, $termPattern)
+                        ->orWhere('customers.first_name', $likeOperator, $termPattern)
+                        ->orWhere('customers.last_name', $likeOperator, $termPattern);
+                }
 
-            // Exact match on conversation number/id
-            $numericQuery = trim($originalQuery);
-            if (is_numeric($numericQuery)) {
-                $q->orWhere('conversations.number', '=', $numericQuery)
-                    ->orWhere('conversations.id', '=', $numericQuery);
-            }
-        });
+                // Exact match on conversation number/id
+                $numericQuery = trim($originalQuery);
+                if (is_numeric($numericQuery)) {
+                    $q->orWhere('conversations.number', '=', $numericQuery)
+                        ->orWhere('conversations.id', '=', $numericQuery);
+                }
+            });
+        }
 
         // Apply standard filters
         $query = $this->applyFiltersToEloquent($query, $filters, $user);
@@ -167,6 +332,29 @@ class SearchService
         if (!empty($filters['body'])) {
             $likeOperator = \Helper::isPgSql() ? 'ILIKE' : 'LIKE';
             $query->where('threads.body', $likeOperator, '%' . $filters['body'] . '%');
+        }
+
+        // Status by name (from search operator status:open)
+        if (!empty($filters['status_name'])) {
+            $statusId = $this->mapStatusName($filters['status_name']);
+            if ($statusId !== null) {
+                $query->where('conversations.status', '=', $statusId);
+            }
+        }
+
+        // From email filter (from search operator from:email)
+        if (!empty($filters['from_email'])) {
+            $likeOperator = \Helper::isPgSql() ? 'ILIKE' : 'LIKE';
+            $query->where(function ($q) use ($filters, $likeOperator) {
+                $q->where('conversations.customer_email', $likeOperator, '%' . $filters['from_email'] . '%')
+                    ->orWhere('threads.from', $likeOperator, '%' . $filters['from_email'] . '%');
+            });
+        }
+
+        // To email filter (from search operator to:email)
+        if (!empty($filters['to_email'])) {
+            $likeOperator = \Helper::isPgSql() ? 'ILIKE' : 'LIKE';
+            $query->where('threads.to', $likeOperator, '%' . $filters['to_email'] . '%');
         }
 
         return $query;
