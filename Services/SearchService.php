@@ -7,28 +7,33 @@ use App\Thread;
 use App\Customer;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Pagination\LengthAwarePaginator;
 
 class SearchService
 {
     /**
      * Perform an enhanced search across conversations.
+     * Returns a LengthAwarePaginator to match FreeScout's expected format.
      */
     public function performSearch($query, $filters, $user)
     {
         if (strlen($query) < config('improvedsearch.min_query_length', 2)) {
-            return null;
+            // Return empty string to fall back to default FreeScout search
+            return '';
         }
 
-        $cacheKey = $this->getCacheKey($query, $filters, $user->id);
-        $cacheDuration = config('improvedsearch.cache_duration', 5);
-
-        return Cache::remember($cacheKey, $cacheDuration * 60, function () use ($query, $filters, $user) {
+        try {
             return $this->executeSearch($query, $filters, $user);
-        });
+        } catch (\Exception $e) {
+            \Log::error('ImprovedSearch: Search failed - ' . $e->getMessage());
+            // Return empty string to fall back to default search on error
+            return '';
+        }
     }
 
     /**
      * Execute the actual search query.
+     * Returns a LengthAwarePaginator with Conversation models.
      */
     protected function executeSearch($query, $filters, $user)
     {
@@ -36,379 +41,135 @@ class SearchService
         $mailboxIds = $this->getAccessibleMailboxIds($user, $filters);
 
         if (empty($mailboxIds)) {
-            return collect();
+            // Return empty paginator
+            return new LengthAwarePaginator([], 0, 50, 1);
         }
 
-        // Check if full-text search is available and enabled
-        if (config('improvedsearch.enable_fulltext') && $this->isFullTextAvailable()) {
-            return $this->fullTextSearch($searchTerms, $filters, $mailboxIds, $user);
-        }
-
-        return $this->enhancedLikeSearch($searchTerms, $filters, $mailboxIds, $user);
-    }
-
-    /**
-     * Full-text search implementation (MySQL).
-     */
-    protected function fullTextSearch($searchTerms, $filters, $mailboxIds, $user)
-    {
-        $searchString = implode(' ', $searchTerms);
-        $weights = config('improvedsearch.search_weights', []);
-
-        $query = DB::table('conversations as c')
-            ->select([
-                'c.id',
-                'c.number',
-                'c.subject',
-                'c.customer_id',
-                'c.mailbox_id',
-                'c.status',
-                'c.state',
-                'c.created_at',
-                'c.updated_at',
-                DB::raw($this->buildRelevanceScore($searchString, $weights) . ' as relevance_score'),
-            ])
-            ->leftJoin('threads as t', 'c.id', '=', 't.conversation_id')
-            ->leftJoin('customers as cu', 'c.customer_id', '=', 'cu.id')
-            ->whereIn('c.mailbox_id', $mailboxIds)
-            ->where(function ($q) use ($searchTerms, $searchString) {
-                // Search in subject
-                $q->whereRaw('MATCH(c.subject) AGAINST(? IN BOOLEAN MODE)', [$this->prepareFullTextQuery($searchString)])
-                    // Search in thread body
-                    ->orWhereRaw('MATCH(t.body) AGAINST(? IN BOOLEAN MODE)', [$this->prepareFullTextQuery($searchString)])
-                    // Fallback LIKE for exact matches
-                    ->orWhere('c.subject', 'LIKE', '%'.$searchString.'%')
-                    ->orWhere('c.customer_email', 'LIKE', '%'.$searchString.'%')
-                    ->orWhere('t.body', 'LIKE', '%'.$searchString.'%');
-
-                // Search by conversation number
-                if (is_numeric($searchString)) {
-                    $q->orWhere('c.number', '=', $searchString)
-                        ->orWhere('c.id', '=', $searchString);
-                }
-            })
-            ->groupBy('c.id')
-            ->orderByDesc('relevance_score')
-            ->orderByDesc('c.updated_at');
-
-        // Apply filters
-        $query = $this->applyFilters($query, $filters, $user);
-
-        $perPage = config('improvedsearch.results_per_page', 50);
-
-        return Conversation::hydrate(
-            $query->paginate($perPage)->items()
-        );
+        return $this->enhancedLikeSearch($searchTerms, $query, $filters, $mailboxIds, $user);
     }
 
     /**
      * Enhanced LIKE search with relevance ranking.
+     * Returns a LengthAwarePaginator with Conversation models.
      */
-    protected function enhancedLikeSearch($searchTerms, $filters, $mailboxIds, $user)
+    protected function enhancedLikeSearch($searchTerms, $originalQuery, $filters, $mailboxIds, $user)
     {
-        $searchString = implode(' ', $searchTerms);
-        $weights = config('improvedsearch.search_weights', []);
         $likeOperator = \Helper::isPgSql() ? 'ILIKE' : 'LIKE';
-
-        $relevanceCase = $this->buildLikeRelevanceScore($searchString, $weights, $likeOperator);
-
-        $query = DB::table('conversations as c')
-            ->select([
-                'c.*',
-                DB::raw($relevanceCase . ' as relevance_score'),
-            ])
-            ->leftJoin('threads as t', 'c.id', '=', 't.conversation_id')
-            ->leftJoin('customers as cu', 'c.customer_id', '=', 'cu.id')
-            ->whereIn('c.mailbox_id', $mailboxIds)
-            ->where(function ($q) use ($searchTerms, $searchString, $likeOperator) {
-                foreach ($searchTerms as $term) {
-                    $term = '%' . $term . '%';
-
-                    $q->orWhere('c.subject', $likeOperator, $term)
-                        ->orWhere('c.customer_email', $likeOperator, $term)
-                        ->orWhere('t.body', $likeOperator, $term)
-                        ->orWhere('t.from', $likeOperator, $term)
-                        ->orWhere('t.to', $likeOperator, $term)
-                        ->orWhere('t.cc', $likeOperator, $term)
-                        ->orWhere('t.bcc', $likeOperator, $term)
-                        ->orWhere('cu.first_name', $likeOperator, $term)
-                        ->orWhere('cu.last_name', $likeOperator, $term)
-                        ->orWhere(DB::raw("CONCAT(cu.first_name, ' ', cu.last_name)"), $likeOperator, $term);
-                }
-
-                // Exact match on conversation number/id
-                if (is_numeric($searchString)) {
-                    $q->orWhere('c.number', '=', $searchString)
-                        ->orWhere('c.id', '=', $searchString);
-                }
-            })
-            ->groupBy('c.id');
-
-        // Apply sorting based on filter
-        $sortBy = $filters['sort'] ?? 'relevance';
-        switch ($sortBy) {
-            case 'date_desc':
-                $query->orderByDesc('c.updated_at');
-                break;
-            case 'date_asc':
-                $query->orderBy('c.updated_at');
-                break;
-            case 'relevance':
-            default:
-                $query->orderByDesc('relevance_score')
-                    ->orderByDesc('c.updated_at');
-                break;
-        }
-
-        // Apply filters
-        $query = $this->applyFilters($query, $filters, $user);
-
         $perPage = config('improvedsearch.results_per_page', 50);
+        $page = request()->input('page', 1);
 
-        $results = $query->paginate($perPage);
+        // Build the base query using Eloquent for proper model hydration
+        $query = Conversation::select('conversations.*')
+            ->leftJoin('threads', 'conversations.id', '=', 'threads.conversation_id')
+            ->leftJoin('customers', 'conversations.customer_id', '=', 'customers.id')
+            ->whereIn('conversations.mailbox_id', $mailboxIds);
 
-        return Conversation::hydrate($results->items());
+        // Add search conditions
+        $query->where(function ($q) use ($searchTerms, $originalQuery, $likeOperator) {
+            foreach ($searchTerms as $term) {
+                $termPattern = '%' . $term . '%';
+
+                $q->orWhere('conversations.subject', $likeOperator, $termPattern)
+                    ->orWhere('conversations.customer_email', $likeOperator, $termPattern)
+                    ->orWhere('threads.body', $likeOperator, $termPattern)
+                    ->orWhere('threads.from', $likeOperator, $termPattern)
+                    ->orWhere('threads.to', $likeOperator, $termPattern)
+                    ->orWhere('threads.cc', $likeOperator, $termPattern)
+                    ->orWhere('threads.bcc', $likeOperator, $termPattern)
+                    ->orWhere('customers.first_name', $likeOperator, $termPattern)
+                    ->orWhere('customers.last_name', $likeOperator, $termPattern);
+            }
+
+            // Exact match on conversation number/id
+            $numericQuery = trim($originalQuery);
+            if (is_numeric($numericQuery)) {
+                $q->orWhere('conversations.number', '=', $numericQuery)
+                    ->orWhere('conversations.id', '=', $numericQuery);
+            }
+        });
+
+        // Apply standard filters
+        $query = $this->applyFiltersToEloquent($query, $filters, $user);
+
+        // Group by conversation ID to avoid duplicates from joins
+        $query->groupBy('conversations.id');
+
+        // Order by relevance (subject matches first) then by date
+        $query->orderByRaw("CASE WHEN conversations.subject {$likeOperator} ? THEN 0 ELSE 1 END", ['%' . $originalQuery . '%'])
+            ->orderByDesc('conversations.updated_at');
+
+        // Return paginated results - this is what FreeScout expects
+        return $query->paginate($perPage);
     }
 
     /**
-     * Build relevance score for full-text search.
+     * Apply filters to Eloquent query (not DB query builder).
      */
-    protected function buildRelevanceScore($searchString, $weights)
-    {
-        $cases = [];
-
-        if (isset($weights['subject'])) {
-            $cases[] = "(CASE WHEN c.subject LIKE '%{$searchString}%' THEN {$weights['subject']} ELSE 0 END)";
-        }
-        if (isset($weights['customer_email'])) {
-            $cases[] = "(CASE WHEN c.customer_email LIKE '%{$searchString}%' THEN {$weights['customer_email']} ELSE 0 END)";
-        }
-        if (isset($weights['body'])) {
-            $cases[] = "(CASE WHEN t.body LIKE '%{$searchString}%' THEN {$weights['body']} ELSE 0 END)";
-        }
-        if (isset($weights['customer_name'])) {
-            $cases[] = "(CASE WHEN CONCAT(cu.first_name, ' ', cu.last_name) LIKE '%{$searchString}%' THEN {$weights['customer_name']} ELSE 0 END)";
-        }
-
-        return empty($cases) ? '0' : '(' . implode(' + ', $cases) . ')';
-    }
-
-    /**
-     * Build relevance score for LIKE search.
-     */
-    protected function buildLikeRelevanceScore($searchString, $weights, $likeOperator)
-    {
-        $escapedSearch = addslashes($searchString);
-        $cases = [];
-
-        // Exact match in subject (highest weight)
-        if (isset($weights['subject'])) {
-            $weight = $weights['subject'];
-            $cases[] = "(CASE WHEN c.subject {$likeOperator} '%{$escapedSearch}%' THEN {$weight} ELSE 0 END)";
-            // Bonus for subject starting with search term
-            $cases[] = "(CASE WHEN c.subject {$likeOperator} '{$escapedSearch}%' THEN " . ($weight * 2) . " ELSE 0 END)";
-        }
-
-        if (isset($weights['customer_email'])) {
-            $weight = $weights['customer_email'];
-            $cases[] = "(CASE WHEN c.customer_email {$likeOperator} '%{$escapedSearch}%' THEN {$weight} ELSE 0 END)";
-        }
-
-        if (isset($weights['body'])) {
-            $weight = $weights['body'];
-            $cases[] = "(CASE WHEN t.body {$likeOperator} '%{$escapedSearch}%' THEN {$weight} ELSE 0 END)";
-        }
-
-        if (isset($weights['customer_name'])) {
-            $weight = $weights['customer_name'];
-            $cases[] = "(CASE WHEN cu.first_name {$likeOperator} '%{$escapedSearch}%' THEN {$weight} ELSE 0 END)";
-            $cases[] = "(CASE WHEN cu.last_name {$likeOperator} '%{$escapedSearch}%' THEN {$weight} ELSE 0 END)";
-        }
-
-        if (isset($weights['thread_from'])) {
-            $weight = $weights['thread_from'];
-            $cases[] = "(CASE WHEN t.from {$likeOperator} '%{$escapedSearch}%' THEN {$weight} ELSE 0 END)";
-        }
-
-        return empty($cases) ? '0' : '(' . implode(' + ', $cases) . ')';
-    }
-
-    /**
-     * Apply advanced filters to the query.
-     */
-    protected function applyFilters($query, $filters, $user)
+    protected function applyFiltersToEloquent($query, $filters, $user)
     {
         // Status filter
         if (!empty($filters['status'])) {
-            $query->where('c.status', '=', $filters['status']);
+            $query->where('conversations.status', '=', $filters['status']);
         }
 
         // State filter
         if (!empty($filters['state'])) {
-            $query->where('c.state', '=', $filters['state']);
+            $query->where('conversations.state', '=', $filters['state']);
         }
 
         // Assigned filter
         if (!empty($filters['assigned'])) {
             if ($filters['assigned'] === 'me') {
-                $query->where('c.user_id', '=', $user->id);
+                $query->where('conversations.user_id', '=', $user->id);
             } elseif ($filters['assigned'] === 'unassigned') {
-                $query->whereNull('c.user_id');
+                $query->whereNull('conversations.user_id');
             } elseif (is_numeric($filters['assigned'])) {
-                $query->where('c.user_id', '=', $filters['assigned']);
+                $query->where('conversations.user_id', '=', $filters['assigned']);
             }
-        }
-
-        // Date range filter
-        if (!empty($filters['date_range'])) {
-            $query = $this->applyDateRangeFilter($query, $filters['date_range']);
         }
 
         // After date
         if (!empty($filters['after'])) {
-            $query->where('c.created_at', '>=', $filters['after']);
+            $query->where('conversations.created_at', '>=', $filters['after']);
         }
 
         // Before date
         if (!empty($filters['before'])) {
-            $query->where('c.created_at', '<=', $filters['before']);
+            $query->where('conversations.created_at', '<=', $filters['before']);
         }
 
         // Has attachments
         if (!empty($filters['attachments'])) {
             if ($filters['attachments'] === 'yes') {
-                $query->where('c.has_attachments', '=', 1);
+                $query->where('conversations.has_attachments', '=', 1);
             } elseif ($filters['attachments'] === 'no') {
-                $query->where('c.has_attachments', '=', 0);
-            }
-        }
-
-        // Has replies filter (new)
-        if (!empty($filters['has_replies'])) {
-            if ($filters['has_replies'] === 'yes') {
-                $query->where('c.threads_count', '>', 1);
-            } elseif ($filters['has_replies'] === 'no') {
-                $query->where('c.threads_count', '<=', 1);
+                $query->where('conversations.has_attachments', '=', 0);
             }
         }
 
         // Type filter
         if (!empty($filters['type'])) {
-            $query->where('c.type', '=', $filters['type']);
+            $query->where('conversations.type', '=', $filters['type']);
         }
 
         // Customer filter
         if (!empty($filters['customer'])) {
-            $query->where('c.customer_id', '=', $filters['customer']);
+            $query->where('conversations.customer_id', '=', $filters['customer']);
+        }
+
+        // Subject filter (exact in subject)
+        if (!empty($filters['subject'])) {
+            $likeOperator = \Helper::isPgSql() ? 'ILIKE' : 'LIKE';
+            $query->where('conversations.subject', $likeOperator, '%' . $filters['subject'] . '%');
+        }
+
+        // Body filter (search in thread body)
+        if (!empty($filters['body'])) {
+            $likeOperator = \Helper::isPgSql() ? 'ILIKE' : 'LIKE';
+            $query->where('threads.body', $likeOperator, '%' . $filters['body'] . '%');
         }
 
         return $query;
-    }
-
-    /**
-     * Apply date range filter.
-     */
-    protected function applyDateRangeFilter($query, $range)
-    {
-        $now = now();
-
-        switch ($range) {
-            case 'today':
-                $query->whereDate('c.created_at', $now->toDateString());
-                break;
-            case 'week':
-                $query->where('c.created_at', '>=', $now->startOfWeek());
-                break;
-            case 'month':
-                $query->where('c.created_at', '>=', $now->startOfMonth());
-                break;
-            case 'quarter':
-                $query->where('c.created_at', '>=', $now->startOfQuarter());
-                break;
-            case 'year':
-                $query->where('c.created_at', '>=', $now->startOfYear());
-                break;
-        }
-
-        return $query;
-    }
-
-    /**
-     * Add additional OR WHERE clauses for extended search.
-     */
-    public function addOrWhereClauses($queryBuilder, $filters, $query)
-    {
-        // This hook allows adding additional search conditions
-        return $queryBuilder;
-    }
-
-    /**
-     * Apply advanced filters hook.
-     */
-    public function applyAdvancedFilters($queryBuilder, $filters, $query)
-    {
-        return $this->applyFilters($queryBuilder, $filters, auth()->user());
-    }
-
-    /**
-     * Index a conversation for search.
-     */
-    public function indexConversation($conversation)
-    {
-        if (!config('improvedsearch.enable_fulltext')) {
-            return;
-        }
-
-        try {
-            DB::table('search_index')->updateOrInsert(
-                ['conversation_id' => $conversation->id],
-                [
-                    'mailbox_id' => $conversation->mailbox_id,
-                    'customer_id' => $conversation->customer_id,
-                    'subject' => $conversation->subject,
-                    'customer_email' => $conversation->customer_email,
-                    'customer_name' => $conversation->customer ? $conversation->customer->getFullName() : '',
-                    'preview' => $conversation->preview,
-                    'status' => $conversation->status,
-                    'state' => $conversation->state,
-                    'created_at' => $conversation->created_at,
-                    'updated_at' => now(),
-                ]
-            );
-        } catch (\Exception $e) {
-            \Log::error('ImprovedSearch: Failed to index conversation ' . $conversation->id . ': ' . $e->getMessage());
-        }
-    }
-
-    /**
-     * Index a thread for search.
-     */
-    public function indexThread($thread)
-    {
-        if (!config('improvedsearch.enable_fulltext') || !$thread->conversation_id) {
-            return;
-        }
-
-        try {
-            // Update the conversation's body_index with all thread bodies
-            $bodies = Thread::where('conversation_id', $thread->conversation_id)
-                ->whereIn('type', [Thread::TYPE_CUSTOMER, Thread::TYPE_MESSAGE])
-                ->pluck('body')
-                ->implode(' ');
-
-            // Strip HTML tags and truncate
-            $plainText = strip_tags($bodies);
-            $plainText = substr($plainText, 0, 65000);
-
-            DB::table('search_index')
-                ->where('conversation_id', $thread->conversation_id)
-                ->update([
-                    'body_text' => $plainText,
-                    'updated_at' => now(),
-                ]);
-        } catch (\Exception $e) {
-            \Log::error('ImprovedSearch: Failed to index thread for conversation ' . $thread->conversation_id . ': ' . $e->getMessage());
-        }
     }
 
     /**
@@ -421,10 +182,15 @@ class SearchService
         }
 
         try {
+            // Check if search_history table exists
+            if (!DB::getSchemaBuilder()->hasTable('search_history')) {
+                return;
+            }
+
             DB::table('search_history')->insert([
                 'user_id' => $user->id,
                 'query' => substr($query, 0, 255),
-                'results_count' => $resultsCount,
+                'results_count' => $resultsCount ?? 0,
                 'created_at' => now(),
             ]);
 
@@ -449,7 +215,7 @@ class SearchService
     }
 
     /**
-     * Get search suggestions based on history and popular searches.
+     * Get search suggestions based on history.
      */
     public function getSuggestions($query, $user, $limit = 5)
     {
@@ -457,33 +223,29 @@ class SearchService
             return [];
         }
 
-        $likeOperator = \Helper::isPgSql() ? 'ILIKE' : 'LIKE';
+        try {
+            // Check if search_history table exists
+            if (!DB::getSchemaBuilder()->hasTable('search_history')) {
+                return [];
+            }
 
-        // Get suggestions from user's history
-        $userSuggestions = DB::table('search_history')
-            ->where('user_id', $user->id)
-            ->where('query', $likeOperator, $query . '%')
-            ->where('results_count', '>', 0)
-            ->groupBy('query')
-            ->orderByDesc(DB::raw('COUNT(*)'))
-            ->limit($limit)
-            ->pluck('query')
-            ->toArray();
+            $likeOperator = \Helper::isPgSql() ? 'ILIKE' : 'LIKE';
 
-        // Get popular suggestions from all users
-        $popularSuggestions = DB::table('search_history')
-            ->where('query', $likeOperator, $query . '%')
-            ->where('results_count', '>', 0)
-            ->groupBy('query')
-            ->orderByDesc(DB::raw('COUNT(*)'))
-            ->limit($limit)
-            ->pluck('query')
-            ->toArray();
+            $suggestions = DB::table('search_history')
+                ->where('user_id', $user->id)
+                ->where('query', $likeOperator, $query . '%')
+                ->where('results_count', '>', 0)
+                ->groupBy('query')
+                ->orderByRaw('COUNT(*) DESC')
+                ->limit($limit)
+                ->pluck('query')
+                ->toArray();
 
-        // Merge and deduplicate
-        $suggestions = array_unique(array_merge($userSuggestions, $popularSuggestions));
-
-        return array_slice($suggestions, 0, $limit);
+            return $suggestions;
+        } catch (\Exception $e) {
+            \Log::error('ImprovedSearch: Failed to get suggestions: ' . $e->getMessage());
+            return [];
+        }
     }
 
     /**
@@ -507,38 +269,6 @@ class SearchService
     }
 
     /**
-     * Prepare query string for MySQL FULLTEXT boolean mode.
-     */
-    protected function prepareFullTextQuery($query)
-    {
-        $terms = $this->parseSearchTerms($query);
-        $prepared = [];
-
-        foreach ($terms as $term) {
-            // Add + for required terms, * for prefix matching
-            $term = preg_replace('/[^\w\s]/', '', $term);
-            if (strlen($term) >= 3) {
-                $prepared[] = '+' . $term . '*';
-            }
-        }
-
-        return implode(' ', $prepared);
-    }
-
-    /**
-     * Check if full-text search is available.
-     */
-    protected function isFullTextAvailable()
-    {
-        // Check if search_index table exists and has fulltext indexes
-        try {
-            return DB::getSchemaBuilder()->hasTable('search_index');
-        } catch (\Exception $e) {
-            return false;
-        }
-    }
-
-    /**
      * Get accessible mailbox IDs for user.
      */
     protected function getAccessibleMailboxIds($user, $filters)
@@ -558,47 +288,34 @@ class SearchService
     }
 
     /**
-     * Generate cache key for search results.
+     * Index a conversation for search (placeholder for future fulltext).
      */
-    protected function getCacheKey($query, $filters, $userId)
+    public function indexConversation($conversation)
     {
-        $filterHash = md5(json_encode($filters));
-        return "improvedsearch:{$userId}:{$filterHash}:" . md5($query);
+        // Placeholder - fulltext indexing disabled for now
     }
 
     /**
-     * Clear search cache for a user.
+     * Index a thread for search (placeholder for future fulltext).
      */
-    public function clearCache($userId = null)
+    public function indexThread($thread)
     {
-        if ($userId) {
-            // Clear specific user's cache
-            Cache::forget("improvedsearch:{$userId}:*");
-        } else {
-            // Clear all search caches (requires cache tags support)
-            Cache::flush();
-        }
+        // Placeholder - fulltext indexing disabled for now
     }
 
     /**
-     * Rebuild the entire search index.
+     * Add additional OR WHERE clauses (hook support).
      */
-    public function rebuildIndex($progressCallback = null)
+    public function addOrWhereClauses($queryBuilder, $filters, $query)
     {
-        $total = Conversation::count();
-        $processed = 0;
+        return $queryBuilder;
+    }
 
-        Conversation::with('customer')->chunk(100, function ($conversations) use (&$processed, $progressCallback, $total) {
-            foreach ($conversations as $conversation) {
-                $this->indexConversation($conversation);
-                $processed++;
-
-                if ($progressCallback && $processed % 100 === 0) {
-                    $progressCallback($processed, $total);
-                }
-            }
-        });
-
-        return $processed;
+    /**
+     * Apply advanced filters (hook support).
+     */
+    public function applyAdvancedFilters($queryBuilder, $filters, $query)
+    {
+        return $queryBuilder;
     }
 }

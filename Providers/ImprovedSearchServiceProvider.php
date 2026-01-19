@@ -91,23 +91,17 @@ class ImprovedSearchServiceProvider extends ServiceProvider
      */
     protected function registerHooks()
     {
-        // NOTE: Disabled search override to maintain FreeScout compatibility
-        // The search.conversations.perform hook returns data in a format that
-        // doesn't match what FreeScout's view expects. For now, we just add
-        // extra features without overriding the core search.
+        // Override the main search with improved relevance-ranked search
+        // Returns a LengthAwarePaginator to match FreeScout's expected format
+        \Eventy::addFilter('search.conversations.perform', function ($result, $query, $filters, $user) {
+            // If result is already set by another module, don't override
+            if ($result !== '' && $result !== null) {
+                return $result;
+            }
 
-        // \Eventy::addFilter('search.conversations.perform', function ($result, $query, $filters, $user) {
-        //     if (!empty($result)) {
-        //         return $result;
-        //     }
-        //     $searchService = app(SearchService::class);
-        //     return $searchService->performSearch($query, $filters, $user);
-        // }, 20, 4);
-
-        // NOTE: Disabled filters extension - format doesn't match FreeScout's view expectations
-        // \Eventy::addFilter('search.filters_list', function ($filtersList, $mode, $filters, $query) {
-        //     return $this->extendFiltersList($filtersList, $mode, $filters, $query);
-        // }, 20, 4);
+            $searchService = app(SearchService::class);
+            return $searchService->performSearch($query, $filters, $user);
+        }, 20, 4);
 
         // Hook into conversation save to update search index
         \Eventy::addAction('conversation.created', function ($conversation) {
