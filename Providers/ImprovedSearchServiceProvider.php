@@ -154,11 +154,25 @@ class ImprovedSearchServiceProvider extends ServiceProvider
             return $sections;
         }, 20, 1);
 
-        // Add JavaScript for search enhancements (load on all pages since search is in header)
-        \Eventy::addAction('javascripts', function () {
+        // Add JavaScript for search enhancements - try multiple hooks
+        $jsCallback = function () {
             $jsPath = base_path('Modules/ImprovedSearch/Public/js/search.js');
             $version = file_exists($jsPath) ? filemtime($jsPath) : time();
             echo '<script src="'.asset('modules/improvedsearch/js/search.js').'?v='.$version.'"></script>';
+        };
+
+        // Try different hook names that FreeScout might use
+        \Eventy::addAction('javascripts', $jsCallback, 20);
+        \Eventy::addAction('scripts', $jsCallback, 20);
+        \Eventy::addFilter('layout.body_bottom', function ($html) use ($jsCallback) {
+            ob_start();
+            $jsCallback();
+            return $html . ob_get_clean();
+        }, 20);
+        \Eventy::addFilter('layout.footer', function ($html) use ($jsCallback) {
+            ob_start();
+            $jsCallback();
+            return $html . ob_get_clean();
         }, 20);
 
         // Track search history
