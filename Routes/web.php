@@ -2,6 +2,7 @@
 
 use Illuminate\Support\Facades\Route;
 
+Route::get('/', 'SearchController@advancedSearch')->name('improvedsearch.advanced');
 Route::get('/suggestions', 'SearchController@suggestions')->name('improvedsearch.suggestions');
 Route::get('/history', 'SearchController@history')->name('improvedsearch.history');
 Route::post('/clear-history', 'SearchController@clearHistory')->name('improvedsearch.clear-history');

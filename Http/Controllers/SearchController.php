@@ -16,6 +16,73 @@ class SearchController extends Controller
     }
 
     /**
+     * Advanced search page with date filters.
+     */
+    public function advancedSearch(Request $request)
+    {
+        $user = auth()->user();
+
+        if (!$user) {
+            return redirect()->route('login');
+        }
+
+        $results = null;
+        $query = $request->get('q', '');
+
+        // Build search query from form inputs
+        $searchParts = [];
+
+        if ($query) {
+            $searchParts[] = $query;
+        }
+
+        // Date filters
+        if ($request->filled('after')) {
+            $searchParts[] = 'after:' . $request->get('after');
+        }
+        if ($request->filled('before')) {
+            $searchParts[] = 'before:' . $request->get('before');
+        }
+        if ($request->filled('last')) {
+            $searchParts[] = 'last:' . $request->get('last');
+        }
+
+        // Other filters
+        if ($request->filled('status')) {
+            $searchParts[] = 'status:' . $request->get('status');
+        }
+        if ($request->filled('from')) {
+            $searchParts[] = 'from:' . $request->get('from');
+        }
+        if ($request->filled('assigned')) {
+            $searchParts[] = 'assigned:' . $request->get('assigned');
+        }
+        if ($request->has('has_attachment')) {
+            $searchParts[] = 'has:attachment';
+        }
+
+        $fullQuery = implode(' ', $searchParts);
+
+        // Perform search if we have any filters
+        if (!empty($searchParts)) {
+            $results = $this->searchService->performSearch($fullQuery, [], $user);
+        }
+
+        // Get users for assigned dropdown
+        $users = \App\User::where('status', \App\User::STATUS_ACTIVE)
+            ->orderBy('first_name')
+            ->get();
+
+        return view('improvedsearch::advanced', [
+            'results' => $results,
+            'query' => $query,
+            'fullQuery' => $fullQuery,
+            'filters' => $request->only(['after', 'before', 'last', 'status', 'from', 'assigned', 'has_attachment']),
+            'users' => $users,
+        ]);
+    }
+
+    /**
      * Get search suggestions for autocomplete.
      */
     public function suggestions(Request $request)

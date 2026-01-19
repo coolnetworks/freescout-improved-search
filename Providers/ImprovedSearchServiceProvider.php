@@ -160,6 +160,18 @@ class ImprovedSearchServiceProvider extends ServiceProvider
             echo '<script src="/modules/improvedsearch/js/search.js"></script>';
         }, 20);
 
+        // Add "Advanced Search" link to the menu
+        \Eventy::addFilter('menu.selected', function ($menu) {
+            return $menu;
+        }, 20, 1);
+
+        // Add link next to search in the header area via menu
+        \Eventy::addFilter('menu.append', function ($html) {
+            $url = route('improvedsearch.advanced');
+            $html .= '<li><a href="' . $url . '" title="' . __('Advanced Search') . '"><i class="glyphicon glyphicon-search"></i></a></li>';
+            return $html;
+        }, 20, 1);
+
         // Track search history
         \Eventy::addAction('search.performed', function ($query, $user, $resultsCount) {
             if (config('improvedsearch.track_history')) {
