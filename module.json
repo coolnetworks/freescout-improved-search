@@ -1,0 +1,16 @@
+{
+    "name": "Improved Search",
+    "alias": "improvedsearch",
+    "description": "Enhanced search with full-text indexing, relevance ranking, and advanced filters for FreeScout",
+    "version": "1.0.0",
+    "author": "",
+    "license": "MIT",
+    "active": 1,
+    "order": 0,
+    "providers": [
+        "Modules\\ImprovedSearch\\Providers\\ImprovedSearchServiceProvider"
+    ],
+    "aliases": {},
+    "files": [],
+    "requires": []
+}
