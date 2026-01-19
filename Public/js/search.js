@@ -333,8 +333,45 @@
             var self = this;
 
             suggestions.forEach(function(suggestion, index) {
-                var highlighted = self.highlightMatch(suggestion, query);
-                html += '<div class="improved-search-suggestion" data-index="' + index + '" data-value="' + self.escapeHtml(suggestion) + '" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid #eee;">' + highlighted + '</div>';
+                // Handle both old string format and new object format
+                var label, value, icon, typeClass;
+
+                if (typeof suggestion === 'object') {
+                    label = suggestion.label || suggestion.text;
+                    value = suggestion.query || suggestion.text;
+
+                    // Icon based on type
+                    switch (suggestion.type) {
+                        case 'customer':
+                            icon = '<i class="glyphicon glyphicon-user" style="margin-right:8px;color:#5bc0de;"></i>';
+                            typeClass = 'suggestion-customer';
+                            break;
+                        case 'conversation':
+                            icon = '<i class="glyphicon glyphicon-envelope" style="margin-right:8px;color:#5cb85c;"></i>';
+                            typeClass = 'suggestion-conversation';
+                            break;
+                        case 'subject':
+                            icon = '<i class="glyphicon glyphicon-file" style="margin-right:8px;color:#f0ad4e;"></i>';
+                            typeClass = 'suggestion-subject';
+                            break;
+                        case 'history':
+                            icon = '<i class="glyphicon glyphicon-time" style="margin-right:8px;color:#999;"></i>';
+                            typeClass = 'suggestion-history';
+                            break;
+                        default:
+                            icon = '';
+                            typeClass = '';
+                    }
+                } else {
+                    // Old string format fallback
+                    label = suggestion;
+                    value = suggestion;
+                    icon = '';
+                    typeClass = '';
+                }
+
+                var highlighted = self.highlightMatch(label, query);
+                html += '<div class="improved-search-suggestion ' + typeClass + '" data-index="' + index + '" data-value="' + self.escapeHtml(value) + '" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid #eee;display:flex;align-items:center;">' + icon + '<span>' + highlighted + '</span></div>';
             });
 
             this.suggestionsContainer.innerHTML = html;

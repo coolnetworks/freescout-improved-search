@@ -589,33 +589,110 @@ class SearchService
     }
 
     /**
-     * Get search suggestions based on history.
+     * Get search suggestions based on actual data and history.
+     * Returns categorized suggestions: customers, subjects, conversations.
      */
-    public function getSuggestions($query, $user, $limit = 5)
+    public function getSuggestions($query, $user, $limit = 8)
     {
         if (strlen($query) < 2) {
             return [];
         }
 
         try {
-            // Check if search_history table exists
-            if (!DB::getSchemaBuilder()->hasTable('search_history')) {
-                return [];
+            $likeOperator = $this->isPgSql() ? 'ILIKE' : 'LIKE';
+            $mailboxIds = $this->getAccessibleMailboxIds($user, []);
+            $suggestions = [];
+
+            // 1. Search for matching customer emails
+            $customers = DB::table('customers')
+                ->where(function ($q) use ($query, $likeOperator) {
+                    $q->where('email', $likeOperator, $query . '%')
+                      ->orWhere('first_name', $likeOperator, $query . '%')
+                      ->orWhere('last_name', $likeOperator, $query . '%');
+                })
+                ->limit(3)
+                ->get(['email', 'first_name', 'last_name']);
+
+            foreach ($customers as $customer) {
+                $name = trim($customer->first_name . ' ' . $customer->last_name);
+                $suggestions[] = [
+                    'type' => 'customer',
+                    'text' => $customer->email,
+                    'label' => $name ? "{$name} ({$customer->email})" : $customer->email,
+                    'query' => 'from:' . $customer->email,
+                ];
             }
 
-            $likeOperator = \Helper::isPgSql() ? 'ILIKE' : 'LIKE';
+            // 2. Search for matching conversation numbers (if numeric)
+            if (is_numeric($query)) {
+                $conversations = Conversation::whereIn('mailbox_id', $mailboxIds)
+                    ->where(function ($q) use ($query) {
+                        $q->where('number', 'LIKE', $query . '%')
+                          ->orWhere('id', '=', $query);
+                    })
+                    ->limit(3)
+                    ->get(['id', 'number', 'subject']);
 
-            $suggestions = DB::table('search_history')
-                ->where('user_id', $user->id)
-                ->where('query', $likeOperator, $query . '%')
-                ->where('results_count', '>', 0)
-                ->groupBy('query')
-                ->orderByRaw('COUNT(*) DESC')
-                ->limit($limit)
-                ->pluck('query')
-                ->toArray();
+                foreach ($conversations as $conv) {
+                    $suggestions[] = [
+                        'type' => 'conversation',
+                        'text' => '#' . $conv->number,
+                        'label' => "#{$conv->number}: " . \Str::limit($conv->subject, 40),
+                        'query' => (string) $conv->number,
+                    ];
+                }
+            }
 
-            return $suggestions;
+            // 3. Search for matching subjects
+            $subjects = Conversation::whereIn('mailbox_id', $mailboxIds)
+                ->where('subject', $likeOperator, '%' . $query . '%')
+                ->orderByDesc('updated_at')
+                ->limit(3)
+                ->get(['id', 'number', 'subject']);
+
+            foreach ($subjects as $conv) {
+                // Avoid duplicates
+                $exists = false;
+                foreach ($suggestions as $s) {
+                    if (isset($s['text']) && $s['text'] === '#' . $conv->number) {
+                        $exists = true;
+                        break;
+                    }
+                }
+                if (!$exists) {
+                    $suggestions[] = [
+                        'type' => 'subject',
+                        'text' => \Str::limit($conv->subject, 50),
+                        'label' => "#{$conv->number}: " . \Str::limit($conv->subject, 40),
+                        'query' => $query,
+                    ];
+                }
+            }
+
+            // 4. Add search history suggestions
+            if (DB::getSchemaBuilder()->hasTable('search_history')) {
+                $history = DB::table('search_history')
+                    ->where('user_id', $user->id)
+                    ->where('query', $likeOperator, $query . '%')
+                    ->where('results_count', '>', 0)
+                    ->groupBy('query')
+                    ->orderByRaw('COUNT(*) DESC')
+                    ->limit(2)
+                    ->pluck('query')
+                    ->toArray();
+
+                foreach ($history as $h) {
+                    $suggestions[] = [
+                        'type' => 'history',
+                        'text' => $h,
+                        'label' => $h,
+                        'query' => $h,
+                    ];
+                }
+            }
+
+            // Limit total suggestions
+            return array_slice($suggestions, 0, $limit);
         } catch (\Exception $e) {
             \Log::error('ImprovedSearch: Failed to get suggestions: ' . $e->getMessage());
             return [];
