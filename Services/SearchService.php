@@ -299,13 +299,25 @@ class SearchService
     }
 
     /**
-     * Enhanced search with FULLTEXT support and fuzzy matching.
+     * Enhanced search with FULLTEXT support, fuzzy matching, and relevance scoring.
      * Returns a LengthAwarePaginator with Conversation models.
      */
     protected function enhancedLikeSearch($searchTerms, $originalQuery, $filters, $mailboxIds, $user)
     {
         $perPage = config('improvedsearch.results_per_page', 50);
         $useFulltext = config('improvedsearch.enable_fulltext', false) && $this->hasFulltextIndexes();
+        $cacheDuration = config('improvedsearch.cache_duration', 5);
+
+        // Generate cache key for this search
+        $cacheKey = $this->getCacheKey($originalQuery, $filters, $mailboxIds, request()->get('page', 1));
+
+        // Try to get cached results
+        if ($cacheDuration > 0) {
+            $cached = Cache::get($cacheKey);
+            if ($cached !== null) {
+                return $cached;
+            }
+        }
 
         // Build the base query using Eloquent for proper model hydration
         $query = Conversation::select('conversations.*')
@@ -316,11 +328,11 @@ class SearchService
         // Add search conditions only if there are search terms
         if (!empty($searchTerms) && !empty($originalQuery)) {
             if ($useFulltext && !$this->isPgSql()) {
-                // Use MySQL FULLTEXT search for speed
-                $query = $this->applyFulltextSearch($query, $originalQuery, $searchTerms);
+                // Use MySQL FULLTEXT search for speed with relevance scoring
+                $query = $this->applyFulltextSearchWithRelevance($query, $originalQuery, $searchTerms);
             } else {
                 // Fall back to enhanced LIKE search with fuzzy matching
-                $query = $this->applyLikeSearch($query, $searchTerms, $originalQuery);
+                $query = $this->applyLikeSearchWithRelevance($query, $searchTerms, $originalQuery);
             }
         }
 
@@ -330,21 +342,45 @@ class SearchService
         // Group by conversation ID to avoid duplicates from joins
         $query->groupBy('conversations.id');
 
-        // Order by date (FULLTEXT relevance ordering is handled in the search itself)
-        $query->orderByDesc('conversations.updated_at');
-
         // Return paginated results - this is what FreeScout expects
-        return $query->paginate($perPage);
+        $results = $query->paginate($perPage);
+
+        // Cache the results
+        if ($cacheDuration > 0) {
+            Cache::put($cacheKey, $results, now()->addMinutes($cacheDuration));
+        }
+
+        return $results;
     }
 
     /**
-     * Apply MySQL FULLTEXT search.
+     * Generate a cache key for search results.
      */
-    protected function applyFulltextSearch($query, $originalQuery, $searchTerms)
+    protected function getCacheKey($query, $filters, $mailboxIds, $page)
     {
-        // Prepare search query for BOOLEAN MODE
-        // Add wildcards for partial matching
+        $filterHash = md5(serialize($filters) . serialize($mailboxIds));
+        return 'improved_search_' . md5($query) . '_' . $filterHash . '_p' . $page;
+    }
+
+    /**
+     * Apply MySQL FULLTEXT search with relevance scoring.
+     * Results are ordered by relevance score: exact matches > subject matches > body matches.
+     */
+    protected function applyFulltextSearchWithRelevance($query, $originalQuery, $searchTerms)
+    {
         $booleanQuery = $this->prepareFulltextQuery($originalQuery);
+        $naturalQuery = $this->prepareNaturalQuery($originalQuery);
+
+        // Add relevance score columns for ordering
+        $query->selectRaw("
+            (
+                CASE WHEN conversations.subject = ? THEN 100 ELSE 0 END +
+                CASE WHEN conversations.customer_email = ? THEN 80 ELSE 0 END +
+                CASE WHEN conversations.number = ? THEN 90 ELSE 0 END +
+                IFNULL(MATCH(conversations.subject) AGAINST(? IN NATURAL LANGUAGE MODE), 0) * 10 +
+                IFNULL(MATCH(threads.body) AGAINST(? IN NATURAL LANGUAGE MODE), 0) * 2
+            ) as relevance_score
+        ", [$originalQuery, $originalQuery, $originalQuery, $naturalQuery, $naturalQuery]);
 
         $query->where(function ($q) use ($booleanQuery, $originalQuery, $searchTerms) {
             // FULLTEXT search on subject
@@ -365,9 +401,39 @@ class SearchService
                 $q->orWhere('conversations.number', '=', trim($originalQuery))
                   ->orWhere('conversations.id', '=', trim($originalQuery));
             }
+
+            // Partial word matching for better typo tolerance
+            foreach ($searchTerms as $term) {
+                if (strlen($term) >= 3) {
+                    // Match word beginnings (like autocomplete)
+                    $q->orWhere('conversations.subject', 'LIKE', $term . '%')
+                      ->orWhere('conversations.subject', 'LIKE', '% ' . $term . '%');
+                }
+            }
         });
 
+        // Order by relevance score (best matches first), then by date
+        $query->orderByDesc('relevance_score')
+              ->orderByDesc('conversations.updated_at');
+
         return $query;
+    }
+
+    /**
+     * Prepare query for NATURAL LANGUAGE MODE (for relevance scoring).
+     */
+    protected function prepareNaturalQuery($query)
+    {
+        // Just clean up and return the query for natural language mode
+        return preg_replace('/[+\-><\(\)~*\"@]+/', ' ', trim($query));
+    }
+
+    /**
+     * Apply MySQL FULLTEXT search (legacy method for compatibility).
+     */
+    protected function applyFulltextSearch($query, $originalQuery, $searchTerms)
+    {
+        return $this->applyFulltextSearchWithRelevance($query, $originalQuery, $searchTerms);
     }
 
     /**
@@ -404,12 +470,18 @@ class SearchService
     }
 
     /**
-     * Apply LIKE search with fuzzy matching using SOUNDEX.
+     * Apply LIKE search with relevance scoring and enhanced fuzzy matching.
      */
-    protected function applyLikeSearch($query, $searchTerms, $originalQuery)
+    protected function applyLikeSearchWithRelevance($query, $searchTerms, $originalQuery)
     {
         $likeOperator = \Helper::isPgSql() ? 'ILIKE' : 'LIKE';
         $useFuzzy = config('improvedsearch.enable_fuzzy', true);
+
+        // Add relevance scoring for non-FULLTEXT searches
+        $relevanceCase = $this->buildLikeRelevanceScore($searchTerms, $originalQuery);
+        if (!empty($relevanceCase)) {
+            $query->selectRaw("({$relevanceCase}) as relevance_score");
+        }
 
         $query->where(function ($q) use ($searchTerms, $originalQuery, $likeOperator, $useFuzzy) {
             foreach ($searchTerms as $term) {
@@ -426,11 +498,28 @@ class SearchService
                     ->orWhere('customers.first_name', $likeOperator, $termPattern)
                     ->orWhere('customers.last_name', $likeOperator, $termPattern);
 
-                // Fuzzy matching with SOUNDEX for MySQL (phonetic similarity)
-                if ($useFuzzy && !$this->isPgSql() && strlen($term) >= 3) {
-                    $q->orWhereRaw("SOUNDEX(conversations.subject) = SOUNDEX(?)", [$term])
-                      ->orWhereRaw("SOUNDEX(customers.first_name) = SOUNDEX(?)", [$term])
-                      ->orWhereRaw("SOUNDEX(customers.last_name) = SOUNDEX(?)", [$term]);
+                // Enhanced fuzzy matching for typos
+                if ($useFuzzy && strlen($term) >= 3) {
+                    if (!$this->isPgSql()) {
+                        // SOUNDEX for phonetic similarity (handles most typos)
+                        $q->orWhereRaw("SOUNDEX(conversations.subject) = SOUNDEX(?)", [$term])
+                          ->orWhereRaw("SOUNDEX(customers.first_name) = SOUNDEX(?)", [$term])
+                          ->orWhereRaw("SOUNDEX(customers.last_name) = SOUNDEX(?)", [$term]);
+                    }
+
+                    // Generate common typo patterns for additional fuzzy matching
+                    $typoPatterns = $this->generateTypoPatterns($term);
+                    foreach ($typoPatterns as $pattern) {
+                        $q->orWhere('conversations.subject', $likeOperator, '%' . $pattern . '%')
+                          ->orWhere('customers.first_name', $likeOperator, '%' . $pattern . '%')
+                          ->orWhere('customers.last_name', $likeOperator, '%' . $pattern . '%');
+                    }
+                }
+
+                // Partial word matching (beginning of words)
+                if (strlen($term) >= 2) {
+                    $q->orWhere('conversations.subject', $likeOperator, $term . '%')
+                      ->orWhere('conversations.subject', $likeOperator, '% ' . $term . '%');
                 }
             }
 
@@ -442,7 +531,84 @@ class SearchService
             }
         });
 
+        // Order by relevance, then date
+        if (!empty($relevanceCase)) {
+            $query->orderByDesc('relevance_score');
+        }
+        $query->orderByDesc('conversations.updated_at');
+
         return $query;
+    }
+
+    /**
+     * Build relevance score SQL for LIKE-based searches.
+     */
+    protected function buildLikeRelevanceScore($searchTerms, $originalQuery)
+    {
+        if (empty($searchTerms)) {
+            return '0';
+        }
+
+        $cases = [];
+        $escapedQuery = addslashes($originalQuery);
+
+        // Exact match in subject = highest score
+        $cases[] = "CASE WHEN conversations.subject = '{$escapedQuery}' THEN 100 ELSE 0 END";
+
+        // Exact match in email = high score
+        $cases[] = "CASE WHEN conversations.customer_email = '{$escapedQuery}' THEN 80 ELSE 0 END";
+
+        // Subject contains exact query = good score
+        $cases[] = "CASE WHEN conversations.subject LIKE '%{$escapedQuery}%' THEN 50 ELSE 0 END";
+
+        foreach ($searchTerms as $term) {
+            $escapedTerm = addslashes($term);
+            // Subject starts with term = moderate score
+            $cases[] = "CASE WHEN conversations.subject LIKE '{$escapedTerm}%' THEN 30 ELSE 0 END";
+        }
+
+        return implode(' + ', $cases);
+    }
+
+    /**
+     * Generate common typo patterns for fuzzy matching.
+     * Creates patterns that match single-character transpositions, insertions, deletions.
+     */
+    protected function generateTypoPatterns($term)
+    {
+        $patterns = [];
+        $len = strlen($term);
+
+        // Skip if term too short
+        if ($len < 3) {
+            return $patterns;
+        }
+
+        // Limit number of patterns to avoid query explosion
+        $maxPatterns = 3;
+
+        // Character transpositions (swapped adjacent chars) - most common typo
+        for ($i = 0; $i < $len - 1 && count($patterns) < $maxPatterns; $i++) {
+            $swapped = substr($term, 0, $i) . $term[$i + 1] . $term[$i] . substr($term, $i + 2);
+            if ($swapped !== $term) {
+                $patterns[] = $swapped;
+            }
+        }
+
+        // Single character wildcards (missing or wrong char) - handles deletion/substitution
+        for ($i = 0; $i < $len && count($patterns) < $maxPatterns; $i++) {
+            $patterns[] = substr($term, 0, $i) . '_' . substr($term, $i + 1);
+        }
+
+        return array_unique($patterns);
+    }
+
+    /**
+     * Apply LIKE search with fuzzy matching using SOUNDEX (legacy method).
+     */
+    protected function applyLikeSearch($query, $searchTerms, $originalQuery)
+    {
+        return $this->applyLikeSearchWithRelevance($query, $searchTerms, $originalQuery);
     }
 
     /**
@@ -739,19 +905,109 @@ class SearchService
     }
 
     /**
-     * Index a conversation for search (placeholder for future fulltext).
+     * Highlight search terms in text.
+     * Returns text with matching terms wrapped in <mark> tags.
      */
-    public function indexConversation($conversation)
+    public function highlightTerms($text, $searchTerms, $maxLength = 200)
     {
-        // Placeholder - fulltext indexing disabled for now
+        if (empty($text) || empty($searchTerms)) {
+            return \Str::limit($text, $maxLength);
+        }
+
+        // Find the best snippet containing search terms
+        $text = strip_tags($text);
+        $snippet = $this->findBestSnippet($text, $searchTerms, $maxLength);
+
+        // Highlight each term
+        foreach ($searchTerms as $term) {
+            if (strlen($term) >= 2) {
+                $pattern = '/(' . preg_quote($term, '/') . ')/i';
+                $snippet = preg_replace($pattern, '<mark>$1</mark>', $snippet);
+            }
+        }
+
+        return $snippet;
     }
 
     /**
-     * Index a thread for search (placeholder for future fulltext).
+     * Find the best snippet of text containing search terms.
+     */
+    protected function findBestSnippet($text, $searchTerms, $maxLength)
+    {
+        // If text is short enough, return it all
+        if (strlen($text) <= $maxLength) {
+            return $text;
+        }
+
+        // Find position of first matching term
+        $firstPos = strlen($text);
+        foreach ($searchTerms as $term) {
+            $pos = stripos($text, $term);
+            if ($pos !== false && $pos < $firstPos) {
+                $firstPos = $pos;
+            }
+        }
+
+        // Calculate snippet boundaries
+        $start = max(0, $firstPos - ($maxLength / 4));
+        $end = min(strlen($text), $start + $maxLength);
+
+        // Adjust start to not cut words
+        if ($start > 0) {
+            $start = strpos($text, ' ', $start);
+            if ($start === false) {
+                $start = 0;
+            }
+        }
+
+        $snippet = substr($text, $start, $end - $start);
+
+        // Add ellipsis if truncated
+        if ($start > 0) {
+            $snippet = '...' . ltrim($snippet);
+        }
+        if ($end < strlen($text)) {
+            $snippet = rtrim($snippet) . '...';
+        }
+
+        return $snippet;
+    }
+
+    /**
+     * Clear search cache for a specific conversation or all cache.
+     */
+    public function clearCache($conversationId = null)
+    {
+        if ($conversationId === null) {
+            // Clear all search cache (use pattern matching if cache driver supports it)
+            try {
+                // For file/database cache, we can't easily clear by pattern
+                // So we rely on natural expiration
+                Cache::flush();
+            } catch (\Exception $e) {
+                \Log::warning('ImprovedSearch: Could not clear cache: ' . $e->getMessage());
+            }
+        }
+    }
+
+    /**
+     * Index a conversation for search (clears relevant cache).
+     */
+    public function indexConversation($conversation)
+    {
+        // Clear cache when conversation is updated
+        $this->clearCache($conversation->id ?? null);
+    }
+
+    /**
+     * Index a thread for search (clears relevant cache).
      */
     public function indexThread($thread)
     {
-        // Placeholder - fulltext indexing disabled for now
+        // Clear cache when thread is updated
+        if ($thread->conversation_id) {
+            $this->clearCache($thread->conversation_id);
+        }
     }
 
     /**

@@ -3,6 +3,11 @@
 return [
     'name' => 'ImprovedSearch',
 
+    // Search engine: 'mysql' (default) or 'meilisearch'
+    // MySQL: No external dependencies, uses FULLTEXT indexes
+    // Meilisearch: Requires external server, faster for large datasets
+    'engine' => env('IMPROVED_SEARCH_ENGINE', 'mysql'),
+
     // Enable MySQL FULLTEXT search (faster, requires running migration)
     // Run: php artisan migrate to create FULLTEXT indexes
     'enable_fulltext' => true,
@@ -42,4 +47,23 @@ return [
 
     // Index update mode: 'realtime', 'queue', 'scheduled'
     'index_mode' => 'realtime',
+
+    // Meilisearch configuration (only used when engine = 'meilisearch')
+    'meilisearch' => [
+        // Meilisearch server URL (cloud or self-hosted)
+        'host' => env('MEILISEARCH_HOST', 'http://localhost:7700'),
+
+        // API key for Meilisearch (required for cloud, optional for local)
+        'key' => env('MEILISEARCH_KEY', ''),
+
+        // Index name for conversations
+        'index' => env('MEILISEARCH_INDEX', 'freescout_conversations'),
+
+        // Typo tolerance settings
+        'typo_tolerance' => [
+            'enabled' => true,
+            'min_word_size_one_typo' => 4,
+            'min_word_size_two_typos' => 8,
+        ],
+    ],
 ];
