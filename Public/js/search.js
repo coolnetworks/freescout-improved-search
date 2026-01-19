@@ -39,15 +39,23 @@
 
         createDatePicker: function() {
             var self = this;
-            var parent = this.searchInput.parentElement;
 
-            // Create date picker button
+            // Find the search form
+            var form = this.searchInput.closest('form');
+            if (!form) return;
+
+            // Create a wrapper for positioning
+            var wrapper = document.createElement('div');
+            wrapper.className = 'improved-search-wrapper';
+            wrapper.style.cssText = 'position:relative;display:inline-block;';
+
+            // Create date picker button (small icon inside the input area)
             this.datePickerBtn = document.createElement('button');
             this.datePickerBtn.type = 'button';
-            this.datePickerBtn.className = 'btn btn-default improved-search-date-btn';
+            this.datePickerBtn.className = 'improved-search-date-btn';
             this.datePickerBtn.innerHTML = '<i class="glyphicon glyphicon-calendar"></i>';
             this.datePickerBtn.title = 'Date filters';
-            this.datePickerBtn.style.cssText = 'margin-left:5px;padding:6px 10px;';
+            this.datePickerBtn.style.cssText = 'position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:#888;cursor:pointer;padding:2px 5px;z-index:10;';
 
             // Create date picker panel
             this.datePickerPanel = document.createElement('div');
@@ -56,9 +64,16 @@
 
             this.datePickerPanel.innerHTML = this.getDatePickerHTML();
 
-            // Insert button after search input
-            this.searchInput.parentNode.insertBefore(this.datePickerBtn, this.searchInput.nextSibling);
-            parent.appendChild(this.datePickerPanel);
+            // Wrap the search input
+            var inputParent = this.searchInput.parentElement;
+            inputParent.style.position = 'relative';
+
+            // Add button and panel to the input's parent
+            inputParent.appendChild(this.datePickerBtn);
+            inputParent.appendChild(this.datePickerPanel);
+
+            // Adjust input padding to make room for button
+            this.searchInput.style.paddingRight = '30px';
 
             // Bind date picker events
             this.datePickerBtn.addEventListener('click', function(e) {

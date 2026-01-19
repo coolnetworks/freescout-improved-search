@@ -20,6 +20,24 @@ class ImprovedSearchServiceProvider extends ServiceProvider
         $this->registerHooks();
         $this->registerCommands();
         $this->registerPublicAssets();
+        $this->createAssetSymlink();
+    }
+
+    /**
+     * Create symlink for public assets if it doesn't exist.
+     */
+    protected function createAssetSymlink()
+    {
+        $target = __DIR__.'/../Public';
+        $link = public_path('modules/improvedsearch');
+
+        if (!file_exists($link) && file_exists($target)) {
+            $parentDir = dirname($link);
+            if (!file_exists($parentDir)) {
+                @mkdir($parentDir, 0755, true);
+            }
+            @symlink($target, $link);
+        }
     }
 
     /**
@@ -136,11 +154,9 @@ class ImprovedSearchServiceProvider extends ServiceProvider
             return $sections;
         }, 20, 1);
 
-        // Add JavaScript for search enhancements
+        // Add JavaScript for search enhancements (load on all pages since search is in header)
         \Eventy::addAction('javascripts', function () {
-            if (\Route::is('conversations.search') || \Route::is('conversations.index')) {
-                echo '<script src="'.asset('modules/improvedsearch/js/search.js').'"></script>';
-            }
+            echo '<script src="'.asset('modules/improvedsearch/js/search.js').'?v='.filemtime(base_path('Modules/ImprovedSearch/Public/js/search.js')).'"></script>';
         }, 20);
 
         // Track search history
