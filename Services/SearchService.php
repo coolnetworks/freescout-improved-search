@@ -72,8 +72,8 @@ class SearchService
         $operators = [];
         $cleanQuery = $query;
 
-        // Parse after:date
-        if (preg_match('/\bafter:(\S+)/i', $query, $matches)) {
+        // Parse after:date or last:date (last is alias for after)
+        if (preg_match('/\b(?:after|last):(\S+)/i', $query, $matches)) {
             $date = $this->parseDate($matches[1]);
             if ($date) {
                 $operators['after'] = $date->format('Y-m-d 00:00:00');
