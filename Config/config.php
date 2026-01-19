@@ -3,8 +3,9 @@
 return [
     'name' => 'ImprovedSearch',
 
-    // Enable full-text search indexing
-    'enable_fulltext' => true,
+    // Enable full-text search indexing (requires search_index table with FULLTEXT indexes)
+    // Set to false to use enhanced LIKE search instead (recommended, works without extra setup)
+    'enable_fulltext' => false,
 
     // Minimum characters to trigger search
     'min_query_length' => 2,
