@@ -155,11 +155,9 @@ class ImprovedSearchServiceProvider extends ServiceProvider
         }, 20, 1);
 
         // Add JavaScript for search enhancements using layout.body_bottom action
-        // Inline the script to avoid asset loading issues
-        \Eventy::addAction('layout.body_bottom', function () {
-            echo '<script type="text/javascript">';
-            echo $this->getSearchScript();
-            echo '</script>';
+        $script = $this->getSearchScript();
+        \Eventy::addAction('layout.body_bottom', function () use ($script) {
+            echo '<script type="text/javascript">' . $script . '</script>';
         }, 20);
 
         // Track search history
