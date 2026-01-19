@@ -1,6 +1,6 @@
 /**
  * Improved Search - FreeScout Module
- * Enhances the search experience with autocomplete and suggestions
+ * Enhances the search experience with autocomplete, suggestions, and date picker
  */
 (function() {
     'use strict';
@@ -12,6 +12,8 @@
         minQueryLength: 2,
         suggestionsContainer: null,
         searchInput: null,
+        datePickerPanel: null,
+        datePickerBtn: null,
 
         init: function() {
             this.searchInput = document.querySelector('input[name="q"], #search-input, .search-input');
@@ -21,17 +23,163 @@
             }
 
             this.createSuggestionsContainer();
+            this.createDatePicker();
             this.bindEvents();
         },
 
         createSuggestionsContainer: function() {
             this.suggestionsContainer = document.createElement('div');
             this.suggestionsContainer.className = 'improved-search-suggestions';
-            this.suggestionsContainer.style.cssText = 'display:none;position:absolute;background:#fff;border:1px solid #ddd;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,0.15);max-height:300px;overflow-y:auto;z-index:1000;width:100%;';
+            this.suggestionsContainer.style.cssText = 'display:none;position:absolute;background:#fff;border:1px solid #ddd;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,0.15);max-height:300px;overflow-y:auto;z-index:1000;width:100%;top:100%;left:0;';
 
             var parent = this.searchInput.parentElement;
             parent.style.position = 'relative';
             parent.appendChild(this.suggestionsContainer);
+        },
+
+        createDatePicker: function() {
+            var self = this;
+            var parent = this.searchInput.parentElement;
+
+            // Create date picker button
+            this.datePickerBtn = document.createElement('button');
+            this.datePickerBtn.type = 'button';
+            this.datePickerBtn.className = 'btn btn-default improved-search-date-btn';
+            this.datePickerBtn.innerHTML = '<i class="glyphicon glyphicon-calendar"></i>';
+            this.datePickerBtn.title = 'Date filters';
+            this.datePickerBtn.style.cssText = 'margin-left:5px;padding:6px 10px;';
+
+            // Create date picker panel
+            this.datePickerPanel = document.createElement('div');
+            this.datePickerPanel.className = 'improved-search-date-panel';
+            this.datePickerPanel.style.cssText = 'display:none;position:absolute;background:#fff;border:1px solid #ddd;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,0.15);z-index:1001;padding:15px;min-width:280px;right:0;top:100%;margin-top:5px;';
+
+            this.datePickerPanel.innerHTML = this.getDatePickerHTML();
+
+            // Insert button after search input
+            this.searchInput.parentNode.insertBefore(this.datePickerBtn, this.searchInput.nextSibling);
+            parent.appendChild(this.datePickerPanel);
+
+            // Bind date picker events
+            this.datePickerBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                self.toggleDatePicker();
+            });
+
+            // Bind quick filter clicks
+            var quickFilters = this.datePickerPanel.querySelectorAll('.date-quick-filter');
+            quickFilters.forEach(function(filter) {
+                filter.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    self.applyDateFilter(this.dataset.filter);
+                });
+            });
+
+            // Bind custom date inputs
+            var applyCustomBtn = this.datePickerPanel.querySelector('.apply-custom-date');
+            if (applyCustomBtn) {
+                applyCustomBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    self.applyCustomDate();
+                });
+            }
+
+            // Close on outside click
+            document.addEventListener('click', function(e) {
+                if (!self.datePickerPanel.contains(e.target) && e.target !== self.datePickerBtn && !self.datePickerBtn.contains(e.target)) {
+                    self.hideDatePicker();
+                }
+            });
+        },
+
+        getDatePickerHTML: function() {
+            return '<div class="date-picker-content">' +
+                '<div style="margin-bottom:12px;font-weight:600;color:#333;">Quick Filters</div>' +
+                '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:15px;">' +
+                    '<a href="#" class="btn btn-xs btn-default date-quick-filter" data-filter="last:today">Today</a>' +
+                    '<a href="#" class="btn btn-xs btn-default date-quick-filter" data-filter="last:yesterday">Yesterday</a>' +
+                    '<a href="#" class="btn btn-xs btn-default date-quick-filter" data-filter="last:week">Last Week</a>' +
+                    '<a href="#" class="btn btn-xs btn-default date-quick-filter" data-filter="last:month">Last Month</a>' +
+                '</div>' +
+                '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:15px;">' +
+                    '<a href="#" class="btn btn-xs btn-default date-quick-filter" data-filter="after:7days">Past 7 Days</a>' +
+                    '<a href="#" class="btn btn-xs btn-default date-quick-filter" data-filter="after:30days">Past 30 Days</a>' +
+                    '<a href="#" class="btn btn-xs btn-default date-quick-filter" data-filter="after:90days">Past 90 Days</a>' +
+                '</div>' +
+                '<hr style="margin:10px 0;">' +
+                '<div style="margin-bottom:8px;font-weight:600;color:#333;">Custom Range</div>' +
+                '<div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;">' +
+                    '<div style="flex:1;">' +
+                        '<label style="font-size:11px;color:#666;display:block;margin-bottom:3px;">After</label>' +
+                        '<input type="date" class="form-control input-sm date-after" style="width:100%;">' +
+                    '</div>' +
+                    '<div style="flex:1;">' +
+                        '<label style="font-size:11px;color:#666;display:block;margin-bottom:3px;">Before</label>' +
+                        '<input type="date" class="form-control input-sm date-before" style="width:100%;">' +
+                    '</div>' +
+                '</div>' +
+                '<button class="btn btn-primary btn-sm apply-custom-date" style="width:100%;">Apply</button>' +
+                '<hr style="margin:10px 0;">' +
+                '<div style="font-size:11px;color:#888;">' +
+                    '<div style="margin-bottom:4px;font-weight:600;">Tip: Type operators directly</div>' +
+                    '<code style="font-size:10px;">last:friday</code>, <code style="font-size:10px;">after:2024-01-01</code>, <code style="font-size:10px;">before:lastmonth</code>' +
+                '</div>' +
+            '</div>';
+        },
+
+        toggleDatePicker: function() {
+            if (this.datePickerPanel.style.display === 'none') {
+                this.datePickerPanel.style.display = 'block';
+            } else {
+                this.hideDatePicker();
+            }
+        },
+
+        hideDatePicker: function() {
+            this.datePickerPanel.style.display = 'none';
+        },
+
+        applyDateFilter: function(filter) {
+            this.insertOperator(filter);
+            this.hideDatePicker();
+            this.searchInput.focus();
+        },
+
+        applyCustomDate: function() {
+            var afterInput = this.datePickerPanel.querySelector('.date-after');
+            var beforeInput = this.datePickerPanel.querySelector('.date-before');
+
+            var filters = [];
+            if (afterInput.value) {
+                filters.push('after:' + afterInput.value);
+            }
+            if (beforeInput.value) {
+                filters.push('before:' + beforeInput.value);
+            }
+
+            if (filters.length > 0) {
+                this.insertOperator(filters.join(' '));
+                afterInput.value = '';
+                beforeInput.value = '';
+            }
+
+            this.hideDatePicker();
+            this.searchInput.focus();
+        },
+
+        insertOperator: function(operator) {
+            var currentValue = this.searchInput.value.trim();
+
+            // Remove existing date operators from the query
+            currentValue = currentValue.replace(/\b(after|before|last):\S+\s*/gi, '').trim();
+
+            // Add the new operator
+            if (currentValue) {
+                this.searchInput.value = operator + ' ' + currentValue;
+            } else {
+                this.searchInput.value = operator;
+            }
         },
 
         bindEvents: function() {
@@ -181,6 +329,7 @@
 
                 case 'Escape':
                     this.hideSuggestions();
+                    this.hideDatePicker();
                     break;
             }
         },
