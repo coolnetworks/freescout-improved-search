@@ -21,6 +21,23 @@ class ImprovedSearchServiceProvider extends ServiceProvider
         $this->registerCommands();
         $this->registerPublicAssets();
         $this->createAssetSymlink();
+        $this->registerSearchRedirect();
+    }
+
+    /**
+     * Redirect standard search to advanced search page.
+     */
+    protected function registerSearchRedirect()
+    {
+        // Redirect from standard search page to advanced search
+        $this->app['router']->get('conversations/search', function () {
+            $query = request()->get('q', '');
+            $params = [];
+            if ($query) {
+                $params['q'] = $query;
+            }
+            return redirect()->route('improvedsearch.advanced', $params);
+        })->middleware(['web', 'auth']);
     }
 
     /**
