@@ -72,11 +72,21 @@ class SearchService
         $operators = [];
         $cleanQuery = $query;
 
-        // Parse after:date or last:date (last is alias for after)
-        if (preg_match('/\b(?:after|last):(\S+)/i', $query, $matches)) {
+        // Parse after:date
+        if (preg_match('/\bafter:(\S+)/i', $query, $matches)) {
             $date = $this->parseDate($matches[1]);
             if ($date) {
                 $operators['after'] = $date->format('Y-m-d 00:00:00');
+            }
+            $cleanQuery = str_replace($matches[0], '', $cleanQuery);
+        }
+
+        // Parse last:day - filters to that specific day only (e.g., last:friday = just last Friday)
+        if (preg_match('/\blast:(\S+)/i', $query, $matches)) {
+            $date = $this->parseDate($matches[1]);
+            if ($date) {
+                $operators['after'] = $date->format('Y-m-d 00:00:00');
+                $operators['before'] = $date->format('Y-m-d 23:59:59');
             }
             $cleanQuery = str_replace($matches[0], '', $cleanQuery);
         }
