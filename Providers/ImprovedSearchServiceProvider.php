@@ -171,25 +171,11 @@ class ImprovedSearchServiceProvider extends ServiceProvider
             return $sections;
         }, 20, 1);
 
-        // Add JavaScript for search enhancements using layout.body_bottom action
+        // Add JavaScript for search enhancements and navbar search form
         // Use external file to comply with CSP (Content Security Policy)
         \Eventy::addAction('layout.body_bottom', function () {
             echo '<script src="/modules/improvedsearch/js/search.js"></script>';
         }, 20);
-
-        // Add search form to the top navbar
-        \Eventy::addFilter('menu.append', function ($html) {
-            $url = route('improvedsearch.advanced');
-            $html .= '<li class="improved-search-nav">'
-                . '<form action="' . $url . '" method="GET" style="margin:8px 10px 0 10px;display:flex;align-items:center;">'
-                . '<div style="position:relative;display:flex;">'
-                . '<input type="text" name="q" class="form-control input-sm" placeholder="' . __('Search...') . '" style="width:200px;padding-right:30px;">'
-                . '<button type="submit" style="position:absolute;right:5px;top:50%;transform:translateY(-50%);background:none;border:none;color:#888;cursor:pointer;"><i class="glyphicon glyphicon-search"></i></button>'
-                . '</div>'
-                . '</form>'
-                . '</li>';
-            return $html;
-        }, 20, 1);
 
         // Track search history
         \Eventy::addAction('search.performed', function ($query, $user, $resultsCount) {

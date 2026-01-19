@@ -16,8 +16,12 @@
         datePickerBtn: null,
 
         init: function() {
+            // First, add the navbar search form
+            this.createNavbarSearch();
+
             // Try multiple selectors to find FreeScout's search input
             var selectors = [
+                '.improved-search-navbar input[name="q"]',
                 'input[name="q"]',
                 '#search-query',
                 '.search-query',
@@ -45,6 +49,53 @@
             this.createDatePicker();
             this.bindEvents();
             console.log('ImprovedSearch: Initialized successfully');
+        },
+
+        createNavbarSearch: function() {
+            // Find the right navbar location
+            var navbar = document.querySelector('.navbar-right') ||
+                         document.querySelector('.nav.navbar-nav.navbar-right') ||
+                         document.querySelector('.navbar-nav:last-child');
+
+            if (!navbar) {
+                console.log('ImprovedSearch: No navbar found for search form');
+                return;
+            }
+
+            // Check if already added
+            if (document.querySelector('.improved-search-navbar')) {
+                return;
+            }
+
+            var li = document.createElement('li');
+            li.className = 'improved-search-navbar';
+            li.style.cssText = 'display:flex;align-items:center;';
+
+            var form = document.createElement('form');
+            form.action = '/improvedsearch';
+            form.method = 'GET';
+            form.style.cssText = 'margin:0 10px;display:flex;align-items:center;';
+
+            var input = document.createElement('input');
+            input.type = 'text';
+            input.name = 'q';
+            input.className = 'form-control input-sm';
+            input.placeholder = 'Search...';
+            input.style.cssText = 'width:180px;';
+
+            var btn = document.createElement('button');
+            btn.type = 'submit';
+            btn.className = 'btn btn-sm btn-default';
+            btn.style.cssText = 'margin-left:4px;';
+            btn.innerHTML = '<i class="glyphicon glyphicon-search"></i>';
+
+            form.appendChild(input);
+            form.appendChild(btn);
+            li.appendChild(form);
+
+            // Insert at the beginning of navbar
+            navbar.insertBefore(li, navbar.firstChild);
+            console.log('ImprovedSearch: Navbar search form added');
         },
 
         createSuggestionsContainer: function() {
