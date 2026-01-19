@@ -235,6 +235,7 @@ class ImprovedSearchServiceProvider extends ServiceProvider
         datePickerBtn: null,
 
         init: function() {
+            console.log('ImprovedSearch: init started');
             var selectors = [
                 'input[name="q"]',
                 '#search-query',
@@ -246,12 +247,20 @@ class ImprovedSearchServiceProvider extends ServiceProvider
             ];
             for (var i = 0; i < selectors.length; i++) {
                 this.searchInput = document.querySelector(selectors[i]);
-                if (this.searchInput) break;
+                if (this.searchInput) {
+                    console.log('ImprovedSearch: Found input with selector:', selectors[i]);
+                    break;
+                }
             }
-            if (!this.searchInput) return;
+            if (!this.searchInput) {
+                console.log('ImprovedSearch: No search input found');
+                return;
+            }
+            console.log('ImprovedSearch: Creating components');
             this.createSuggestionsContainer();
             this.createDatePicker();
             this.bindEvents();
+            console.log('ImprovedSearch: Init complete');
         },
 
         createSuggestionsContainer: function() {
@@ -265,6 +274,7 @@ class ImprovedSearchServiceProvider extends ServiceProvider
 
         createDatePicker: function() {
             var self = this;
+            console.log('ImprovedSearch: createDatePicker started');
 
             this.datePickerBtn = document.createElement('button');
             this.datePickerBtn.type = 'button';
@@ -272,6 +282,7 @@ class ImprovedSearchServiceProvider extends ServiceProvider
             this.datePickerBtn.innerHTML = '<i class="glyphicon glyphicon-calendar"></i>';
             this.datePickerBtn.title = 'Date filters';
             this.datePickerBtn.style.cssText = 'position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:#888;cursor:pointer;padding:2px 5px;z-index:10;';
+            console.log('ImprovedSearch: Button created:', this.datePickerBtn);
 
             this.datePickerPanel = document.createElement('div');
             this.datePickerPanel.className = 'improved-search-date-panel';
@@ -279,10 +290,12 @@ class ImprovedSearchServiceProvider extends ServiceProvider
             this.datePickerPanel.innerHTML = this.getDatePickerHTML();
 
             var inputParent = this.searchInput.parentElement;
+            console.log('ImprovedSearch: Parent element:', inputParent, 'tagName:', inputParent ? inputParent.tagName : 'null');
             inputParent.style.position = 'relative';
             inputParent.appendChild(this.datePickerBtn);
             inputParent.appendChild(this.datePickerPanel);
             this.searchInput.style.paddingRight = '30px';
+            console.log('ImprovedSearch: Button appended, checking if in DOM:', document.contains(this.datePickerBtn));
 
             this.datePickerBtn.addEventListener('click', function(e) {
                 e.preventDefault();
