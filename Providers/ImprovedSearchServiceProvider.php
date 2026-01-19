@@ -156,7 +156,9 @@ class ImprovedSearchServiceProvider extends ServiceProvider
 
         // Add JavaScript for search enhancements (load on all pages since search is in header)
         \Eventy::addAction('javascripts', function () {
-            echo '<script src="'.asset('modules/improvedsearch/js/search.js').'?v='.filemtime(base_path('Modules/ImprovedSearch/Public/js/search.js')).'"></script>';
+            $jsPath = base_path('Modules/ImprovedSearch/Public/js/search.js');
+            $version = file_exists($jsPath) ? filemtime($jsPath) : time();
+            echo '<script src="'.asset('modules/improvedsearch/js/search.js').'?v='.$version.'"></script>';
         }, 20);
 
         // Track search history

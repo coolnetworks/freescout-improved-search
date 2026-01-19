@@ -16,15 +16,35 @@
         datePickerBtn: null,
 
         init: function() {
-            this.searchInput = document.querySelector('input[name="q"], #search-input, .search-input');
+            // Try multiple selectors to find FreeScout's search input
+            var selectors = [
+                'input[name="q"]',
+                '#search-query',
+                '.search-query',
+                '#q',
+                'input.form-control[type="text"]',
+                '.navbar-form input[type="text"]',
+                '.search-form input[type="text"]',
+                'form[action*="search"] input[type="text"]'
+            ];
+
+            for (var i = 0; i < selectors.length; i++) {
+                this.searchInput = document.querySelector(selectors[i]);
+                if (this.searchInput) {
+                    console.log('ImprovedSearch: Found search input with selector:', selectors[i]);
+                    break;
+                }
+            }
 
             if (!this.searchInput) {
+                console.log('ImprovedSearch: No search input found');
                 return;
             }
 
             this.createSuggestionsContainer();
             this.createDatePicker();
             this.bindEvents();
+            console.log('ImprovedSearch: Initialized successfully');
         },
 
         createSuggestionsContainer: function() {
@@ -39,10 +59,14 @@
 
         createDatePicker: function() {
             var self = this;
+            console.log('ImprovedSearch: Creating date picker');
 
             // Find the search form
             var form = this.searchInput.closest('form');
-            if (!form) return;
+            if (!form) {
+                console.log('ImprovedSearch: No form found, skipping date picker');
+                return;
+            }
 
             // Create a wrapper for positioning
             var wrapper = document.createElement('div');
