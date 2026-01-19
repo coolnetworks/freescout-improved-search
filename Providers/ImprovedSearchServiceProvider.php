@@ -265,8 +265,6 @@ class ImprovedSearchServiceProvider extends ServiceProvider
 
         createDatePicker: function() {
             var self = this;
-            var form = this.searchInput.closest('form');
-            if (!form) return;
 
             this.datePickerBtn = document.createElement('button');
             this.datePickerBtn.type = 'button';
